@@ -21,6 +21,7 @@
             cargo = toolchain;
             rustc = toolchain;
           };
+          cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           src = pkgs.lib.cleanSource ./.;
           # git for integration tests / runtime, zsh for the shell_from_env unit test.
           nativeBuildInputs = [ pkgs.git pkgs.zsh ];
@@ -43,8 +44,8 @@
           };
 
           packages.default = rustPlatform.buildRustPackage {
-            pname = "blamefetch";
-            version = "0.1.0";
+            pname = cargoToml.package.name;
+            version = cargoToml.package.version;
             inherit src nativeBuildInputs;
             cargoLock.lockFile = ./Cargo.lock;
           };
