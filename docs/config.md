@@ -95,6 +95,32 @@ renders:
 Co-Authored-By: Git 2.54.0 <git@vcs.invalid>
 ```
 
+## Example: blamefetch
+
+blamefetch can also credit itself:
+
+```toml
+[[co_authors]]
+name = "blamefetch {version}"
+email = "self@blamefetch.invalid"
+
+[co_authors.fields]
+version = { command = "blamefetch --version | cut -d' ' -f2", fallback = ""}
+```
+
+`blamefetch --version` prints `blamefetch 0.1.0`; the command extracts `0.1.0`
+and renders:
+
+```text
+Co-Authored-By: blamefetch 0.1.0 <self@blamefetch.invalid>
+```
+
+If `blamefetch` is not on `PATH` and the command fails, the `fallback = ""`
+keeps the trailer alive with an empty field; unknown placeholders vanish, so
+the name becomes just `blamefetch`. This is safe: `--version` makes the CLI
+print and exit before any config is loaded or system probes run, so there is no
+recursive output.
+
 ## Combining with built-in sources
 
 You can also customize a built-in source instead of writing a config-only

@@ -95,15 +95,16 @@ Co-Authored-By: shiziku <shiziku@users.local>
 Co-Authored-By: zsh 5.9.1 <shell@system.invalid>
 Co-Authored-By: xterm-kitty <terminal@system.invalid>
 Co-Authored-By: Hyprland <wm@system.invalid>
-Co-Authored-By: 6 days, 13 hours, 13 mins <uptime@system.invalid>
-Co-Authored-By: Intel(R) Core(TM) Ultra 5 225H (14 threads) @ 4.72 GHz <cpu@system.invalid>
+Co-Authored-By: 7 days, 2 hours, 43 mins <uptime@system.invalid>
+Co-Authored-By: Intel(R) Core(TM) Ultra 5 225H (14 threads) @ 1.80 GHz <cpu@system.invalid>
 Co-Authored-By: Intel Corporation Arrow Lake-P [Arc Pro 130T/140T] [8086:7d51] (rev 03) <gpu@system.invalid>
-Co-Authored-By: 5.84 GiB / 30.88 GiB <memory@system.invalid>
-Co-Authored-By: 276.08 GiB / 467.40 GiB <disk@system.invalid>
+Co-Authored-By: 4.00 GiB / 30.88 GiB <memory@system.invalid>
+Co-Authored-By: 278.15 GiB / 467.40 GiB <disk@system.invalid>
 Co-Authored-By: en_US.UTF-8 <locale@system.invalid>
 Co-Authored-By: Nvim v0.12.4 <editor@user.invalid>
+Co-Authored-By: blamefetch 0.1.0 <self@blamefetch.invalid>
 
-Co-Authored-By: Claude 2.1.220 <noreply@anthropic.com>
+Co-Authored-By: Claude 2.1.222 <noreply@anthropic.com>
 ```
 
 ## Configuration
