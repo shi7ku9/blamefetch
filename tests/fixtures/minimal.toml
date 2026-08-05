@@ -1,0 +1,13 @@
+[commit]
+author_name = "Test User"
+author_email = "test@example.com"
+
+[messages]
+pool = ["feat: hermetic"]
+
+[[co_authors]]
+name = "Bots {version}"
+email = "bots@example.com"
+
+[co_authors.fields]
+version = { command = "printf 5.0", fallback = "0.0" }
