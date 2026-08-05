@@ -9,6 +9,9 @@
 # else it prints is your configuration.
 
 [commit]
+# Fallback author used only when no real repo commit is picked (outside a git
+# repository, or with --no-git). Inside a repo, the picked commit's own author
+# is shown; use --author/--email to force.
 # author_name = "Your Name"
 # author_email = "you@example.com"
 

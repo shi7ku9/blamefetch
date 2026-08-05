@@ -99,6 +99,53 @@ fn uses_real_commit_in_repo() {
 }
 
 #[test]
+fn config_author_does_not_override_real_commit() {
+    let repo = make_repo();
+    let cfg_path = repo.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"[commit]
+author_name = "Config User"
+author_email = "config@x.com"
+"#,
+    )
+    .unwrap();
+
+    let out = bin()
+        .arg("--config")
+        .arg(&cfg_path)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("Author: Test User <test@example.com>"),
+        "config author must not mask the real commit author:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Config User"),
+        "config author leaked into the output:\n{stdout}"
+    );
+
+    // An explicit --author still wins over the picked commit.
+    let out = bin()
+        .arg("--author")
+        .arg("CLI User")
+        .arg("--config")
+        .arg(&cfg_path)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("Author: CLI User <test@example.com>"),
+        "--author must force the name:\n{stdout}"
+    );
+}
+
+#[test]
 fn blank_line_before_renders_between_groups() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = dir.path().join("config.toml");

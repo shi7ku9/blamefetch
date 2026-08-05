@@ -112,7 +112,9 @@ blamefetch embeds a default configuration and merges
 `~/.config/blamefetch/config.toml` on top of it (the exact path follows your
 platform's config directory). The main sections are:
 
-- `[commit]` — default `author_name` / `author_email`.
+- `[commit]` — fallback `author_name` / `author_email`, used only when no real
+  repo commit is picked (outside a git repository, or with `--no-git`); a real
+  commit's own author wins. `--author` / `--email` always force.
 - `[messages]` — the `pool` used for random commit messages.
 - `[[co_authors]]` — one entry per trailer, with `kind`, `enabled`, `name`,
   `email`, `fields`, and `blank_line_before`.

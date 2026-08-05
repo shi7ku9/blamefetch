@@ -52,15 +52,17 @@ fn main() -> ExitCode {
     }
 
     let fallback_user = git::username().unwrap_or_else(|| "unknown".to_string());
+    // Precedence: explicit CLI flags, then the picked commit's own author, then
+    // the config default (only used outside a repo / --no-git), then $USER.
     let author_name = cli
         .author
-        .or_else(|| config.commit.author_name.clone())
         .or_else(|| git.author_name.clone())
+        .or_else(|| config.commit.author_name.clone())
         .unwrap_or_else(|| fallback_user.clone());
     let author_email = cli
         .email
-        .or_else(|| config.commit.author_email.clone())
         .or_else(|| git.author_email.clone())
+        .or_else(|| config.commit.author_email.clone())
         .unwrap_or_else(|| format!("{fallback_user}@localhost"));
 
     let git_data = git::GitData {

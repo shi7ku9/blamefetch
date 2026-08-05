@@ -194,7 +194,16 @@ mod tests {
 
     #[test]
     fn commit_fields_merge_fieldwise() {
-        let mut c = base();
+        // Load from an empty file so the developer's real config
+        // (~/.config/blamefetch/config.toml) cannot leak into the base.
+        // Distinct from the dir used by bad_config_falls_back_to_defaults: the
+        // two tests run in parallel threads and would delete each other's files.
+        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.toml");
+        std::fs::write(&path, "").unwrap();
+        let mut c = Config::load(Some(&path));
+        std::fs::remove_dir_all(&dir).unwrap();
         let user = Config {
             commit: CommitConfig {
                 author_name: Some("A".to_string()),
