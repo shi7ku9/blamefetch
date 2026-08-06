@@ -70,6 +70,7 @@ fn main() -> ExitCode {
         message: cli.message.unwrap_or(git.message),
         author_name: Some(author_name),
         author_email: Some(author_email),
+        date: git.date,
     };
 
     let ctx = SourceContext::new();

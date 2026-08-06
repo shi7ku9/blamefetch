@@ -28,6 +28,10 @@ pub struct GitData {
     pub message: String,
     pub author_name: Option<String>,
     pub author_email: Option<String>,
+    /// Author date rendered like git's default `%ad` (e.g. "Thu Aug 6 05:32:10
+    /// 2026 +0800"); `None` when unavailable, in which case the Date line is
+    /// skipped.
+    pub date: Option<String>,
 }
 
 impl GitData {
@@ -37,6 +41,7 @@ impl GitData {
             message: random_message(config, rng),
             author_name: None,
             author_email: None,
+            date: Some(random_date(rng)),
         }
     }
 }
@@ -50,6 +55,7 @@ pub fn git_data(shell: &dyn GitShell, rng: &mut StdRng) -> Option<GitData> {
         message: commit_message(shell, &hash).unwrap_or_default(),
         author_name: commit_author_name(shell, &hash),
         author_email: commit_author_email(shell, &hash),
+        date: commit_date(shell, &hash),
         hash,
     })
 }
@@ -88,6 +94,25 @@ fn commit_author_email(shell: &dyn GitShell, hash: &str) -> Option<String> {
     shell
         .output(&["log", "-1", "--format=%ae", hash])
         .filter(|s| !s.is_empty())
+}
+
+/// Author date of the selected commit, in git's default human-readable format
+/// (e.g. "Thu Aug 6 05:32:10 2026 +0800"). `--date=default` pins the format so
+/// it matches `random_date` regardless of the user's `log.date` config.
+fn commit_date(shell: &dyn GitShell, hash: &str) -> Option<String> {
+    shell
+        .output(&["log", "-1", "--date=default", "--format=%ad", hash])
+        .filter(|s| !s.is_empty())
+}
+
+/// Random author date within the last year (never in the future), formatted
+/// like git's default `%ad`. `%-d` renders the unpadded day, matching git's
+/// `Thu Aug 6 05:32:10 2026 +0800` rather than a zero- or space-padded one.
+fn random_date(rng: &mut StdRng) -> String {
+    const SECONDS_PER_YEAR: u64 = 365 * 24 * 60 * 60;
+    let back = rng.random_range(0..=SECONDS_PER_YEAR);
+    let when = chrono::Local::now() - chrono::TimeDelta::seconds(back as i64);
+    when.format("%a %b %-d %H:%M:%S %Y %z").to_string()
 }
 
 pub fn random_hash(rng: &mut StdRng) -> String {
@@ -208,6 +233,10 @@ mod tests {
                 &["log", "-1", "--format=%ae", hash],
                 Some("ann@x.com".to_string()),
             );
+            g.set(
+                &["log", "-1", "--date=default", "--format=%ad", hash],
+                Some("Thu Aug 6 05:32:10 2026 +0800".to_string()),
+            );
         }
         let data = git_data(&g, &mut rng()).unwrap();
         assert!(
@@ -217,6 +246,7 @@ mod tests {
         assert_eq!(data.message, "feat: test");
         assert_eq!(data.author_name.as_deref(), Some("Ann"));
         assert_eq!(data.author_email.as_deref(), Some("ann@x.com"));
+        assert_eq!(data.date.as_deref(), Some("Thu Aug 6 05:32:10 2026 +0800"));
     }
 
     #[test]
@@ -238,5 +268,22 @@ mod tests {
         assert_eq!(data.message, "hi");
         assert_eq!(data.hash.len(), 40);
         assert!(data.author_name.is_none());
+        assert_random_date(&data);
+    }
+
+    /// A random date must be present, shaped like git's default `%ad`
+    /// ("Thu Aug 6 05:32:10 2026 +0800": weekday, month, unpadded day, time,
+    /// year, offset), within the last year, and never in the future.
+    fn assert_random_date(data: &GitData) {
+        let date = data.date.as_deref().expect("random mode has a date");
+        let dt = chrono::DateTime::parse_from_str(date, "%a %b %d %H:%M:%S %Y %z")
+            .unwrap_or_else(|e| panic!("date not git-formatted ({e}): {date:?}"));
+        let now = chrono::Utc::now();
+        let dt = dt.with_timezone(&chrono::Utc);
+        assert!(dt <= now, "random date must not be in the future: {date:?}");
+        assert!(
+            dt >= now - chrono::TimeDelta::days(366),
+            "random date must be within a year: {date:?}"
+        );
     }
 }

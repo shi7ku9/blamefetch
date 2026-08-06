@@ -70,16 +70,46 @@ fn golden_hermetic_output() {
             .all(|c| c.is_ascii_hexdigit())
     );
     assert_eq!(lines[1], "Author: Test User <test@example.com>");
-    assert!(lines[2].is_empty());
-    assert_eq!(lines[3], "feat: hermetic");
+    // The random date must look like git's default `%ad` ("Thu Aug 6
+    // 05:32:10 2026 +0800"): weekday, month, unpadded day, time, year, offset.
+    assert!(lines[2].starts_with("Date: "));
+    let date = &lines[2]["Date: ".len()..];
+    let parts: Vec<&str> = date.split_whitespace().collect();
+    assert_eq!(parts.len(), 6, "unexpected date format: {date:?}");
+    assert!(parts[0].chars().all(|c| c.is_alphabetic()) && parts[0].len() == 3);
+    assert!(parts[1].chars().all(|c| c.is_alphabetic()) && parts[1].len() == 3);
+    assert!(parts[2].parse::<u32>().is_ok() && parts[2].len() <= 2);
+    assert!(parts[3].len() == 8 && parts[3].chars().nth(2) == Some(':'));
+    assert!(parts[4].parse::<u32>().is_ok() && parts[4].len() == 4);
+    assert!(
+        (parts[5].starts_with('+') || parts[5].starts_with('-'))
+            && parts[5].len() == 5
+            && parts[5][1..].chars().all(|c| c.is_ascii_digit())
+    );
+    assert!(lines[3].is_empty());
+    assert_eq!(lines[4], "feat: hermetic");
     // The fixture drives the co-author from a deterministic shell command.
-    assert_eq!(lines.len(), 6);
-    assert!(lines[4].is_empty());
-    assert_eq!(lines[5], "Co-Authored-By: Bots 5.0 <bots@example.com>");
+    assert_eq!(lines.len(), 7);
+    assert!(lines[5].is_empty());
+    assert_eq!(lines[6], "Co-Authored-By: Bots 5.0 <bots@example.com>");
 
-    // Determinism with a fixed seed.
+    // Determinism with a fixed seed: everything is byte-identical except the
+    // Date line, which is relative to the wall clock and advances between runs.
     let out2 = run();
-    assert_eq!(String::from_utf8(out2.stdout).unwrap(), stdout);
+    let stdout2 = String::from_utf8(out2.stdout).unwrap();
+    let mask_date = |s: &str| -> String {
+        s.lines()
+            .map(|l| {
+                if l.starts_with("Date: ") {
+                    "Date: <masked>"
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(mask_date(&stdout2), mask_date(&stdout));
 }
 
 #[test]
@@ -96,6 +126,10 @@ fn uses_real_commit_in_repo() {
     );
     assert!(stdout.contains("test commit"));
     assert!(stdout.contains("Author: Test User <test@example.com>"));
+    assert!(
+        stdout.contains("Date: "),
+        "real commit must show its author date:\n{stdout}"
+    );
 }
 
 #[test]

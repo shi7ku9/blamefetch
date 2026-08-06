@@ -18,7 +18,8 @@ It never creates or modifies commits. It just prints.
   each as a `Co-Authored-By` trailer.
 - Fully configurable through `~/.config/blamefetch/config.toml`, including
   custom co-authors, message pools, and shell-command fields.
-- Reproducible output with `--seed`.
+- Reproducible output with `--seed` (except the `Date:` line, which is
+  relative to the current time).
 - Optional colored output with `--color`.
 
 ## Requirements
@@ -84,6 +85,7 @@ Output varies by machine and configuration. A sample run:
 ```text
 commit 2838daf6f0965b2da270de98d6b2c8d3a02870aa
 Author: shiziku <shiziku@localhost>
+Date: Thu Aug 6 05:32:10 2026 +0800
 
 fix: blame the cache
 
