@@ -72,8 +72,8 @@ fn golden_hermetic_output() {
     assert_eq!(lines[1], "Author: Test User <test@example.com>");
     // The random date must look like git's default `%ad` ("Thu Aug 6
     // 05:32:10 2026 +0800"): weekday, month, unpadded day, time, year, offset.
-    assert!(lines[2].starts_with("Date: "));
-    let date = &lines[2]["Date: ".len()..];
+    assert!(lines[2].starts_with("Date:   "));
+    let date = &lines[2]["Date:   ".len()..];
     let parts: Vec<&str> = date.split_whitespace().collect();
     assert_eq!(parts.len(), 6, "unexpected date format: {date:?}");
     assert!(parts[0].chars().all(|c| c.is_alphabetic()) && parts[0].len() == 3);
@@ -87,11 +87,11 @@ fn golden_hermetic_output() {
             && parts[5][1..].chars().all(|c| c.is_ascii_digit())
     );
     assert!(lines[3].is_empty());
-    assert_eq!(lines[4], "feat: hermetic");
+    assert_eq!(lines[4], "    feat: hermetic");
     // The fixture drives the co-author from a deterministic shell command.
     assert_eq!(lines.len(), 7);
-    assert!(lines[5].is_empty());
-    assert_eq!(lines[6], "Co-Authored-By: Bots 5.0 <bots@example.com>");
+    assert_eq!(lines[5], "    ", "blank separator line indented like git");
+    assert_eq!(lines[6], "    Co-Authored-By: Bots 5.0 <bots@example.com>");
 
     // Determinism with a fixed seed: everything is byte-identical except the
     // Date line, which is relative to the wall clock and advances between runs.
@@ -100,7 +100,7 @@ fn golden_hermetic_output() {
     let mask_date = |s: &str| -> String {
         s.lines()
             .map(|l| {
-                if l.starts_with("Date: ") {
+                if l.starts_with("Date:   ") {
                     "Date: <masked>"
                 } else {
                     l
@@ -209,18 +209,19 @@ email = "second@x.com"
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
+    // The body is indented like git, so strip the indent when locating lines.
     let first = lines
         .iter()
-        .position(|l| l.starts_with("Co-Authored-By: First"))
+        .position(|l| l.trim_start().starts_with("Co-Authored-By: First"))
         .unwrap();
     let second = lines
         .iter()
-        .position(|l| l.starts_with("Co-Authored-By: Second"))
+        .position(|l| l.trim_start().starts_with("Co-Authored-By: Second"))
         .unwrap();
     assert_eq!(second, first + 2, "blank line between the two trailers");
     assert_eq!(
         *lines.last().unwrap(),
-        "Co-Authored-By: Second <second@x.com>",
+        "    Co-Authored-By: Second <second@x.com>",
         "no trailer after the last one"
     );
 }

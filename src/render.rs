@@ -16,30 +16,37 @@ pub fn render_commit(git: &GitData, co_authors: &[CoAuthor], opts: &RenderOption
         git.author_email.as_deref().unwrap_or_default()
     ));
     if let Some(date) = &git.date {
-        out.push_str(&format!("{}: {}\n", word("Date", opts.color), date));
+        // Three spaces after the colon, like git: the label column is padded to
+        // 8 characters so the value lines up with "Author: ".
+        out.push_str(&format!("{}:   {}\n", word("Date", opts.color), date));
     }
     out.push('\n');
 
+    // Compose the body (message + trailers), then indent every line by four
+    // spaces to match git's rendering of a commit message.
+    let mut body = String::new();
     if !git.message.is_empty() {
-        out.push_str(&git.message);
-        if !git.message.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push('\n');
+        body.push_str(git.message.trim_end());
+        body.push('\n');
+        body.push('\n');
     }
-
     for ca in co_authors {
         // Generalizes the old "blank line before a co-author block" rule to any
         // entry; never double-blanks right after the message paragraph.
-        if ca.blank_line_before && !out.ends_with("\n\n") {
-            out.push('\n');
+        if ca.blank_line_before && !body.ends_with("\n\n") {
+            body.push('\n');
         }
-        out.push_str(&format!(
+        body.push_str(&format!(
             "{}: {} <{}>\n",
             word("Co-Authored-By", opts.color),
             ca.name,
             ca.email
         ));
+    }
+    for line in body.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
     }
 
     out
@@ -108,9 +115,9 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], format!("commit {}", "ab".repeat(20)));
         assert_eq!(lines[1], "Author: Ann <ann@x.com>");
-        assert_eq!(lines[2], "Date: Thu Aug 6 05:32:10 2026 +0800");
+        assert_eq!(lines[2], "Date:   Thu Aug 6 05:32:10 2026 +0800");
         assert!(lines[3].is_empty());
-        assert_eq!(lines[4], "feat: test");
+        assert_eq!(lines[4], "    feat: test");
     }
 
     #[test]
@@ -119,23 +126,30 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[1], "Author: Ann <ann@x.com>");
         assert!(lines[2].is_empty(), "no Date line when date is None");
-        assert_eq!(lines[3], "feat: test");
+        assert_eq!(lines[3], "    feat: test");
     }
 
     #[test]
     fn trailers_in_config_order_with_blank_before_last() {
         let out = render_commit(&git(), &trailers(), &opts());
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[6], "Co-Authored-By: NixOS 26.11 <os@system.invalid>");
+        assert_eq!(
+            lines[6],
+            "    Co-Authored-By: NixOS 26.11 <os@system.invalid>"
+        );
         assert_eq!(
             lines[7],
-            "Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>"
+            "    Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>"
         );
-        assert!(
-            lines[8].is_empty(),
-            "blank line before the blank_line_before trailer"
+        assert_eq!(
+            lines[8],
+            "    ",
+            "blank line before the blank_line_before trailer is indented like git"
         );
-        assert_eq!(lines[9], "Co-Authored-By: Sample 5.0 <noreply@example.com>");
+        assert_eq!(
+            lines[9],
+            "    Co-Authored-By: Sample 5.0 <noreply@example.com>"
+        );
         assert_eq!(lines.len(), 10);
     }
 
@@ -145,7 +159,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             *lines.last().unwrap(),
-            "Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>"
+            "    Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>"
         );
     }
 
@@ -158,11 +172,12 @@ mod tests {
         }];
         let out = render_commit(&git(), &v, &opts());
         let lines: Vec<&str> = out.lines().collect();
-        assert!(
-            lines[5].is_empty(),
+        assert_eq!(
+            lines[5],
+            "    ",
             "message paragraph keeps its single blank line"
         );
-        assert_eq!(lines[6], "Co-Authored-By: Only <only@x.com>");
+        assert_eq!(lines[6], "    Co-Authored-By: Only <only@x.com>");
         assert_eq!(lines.len(), 7, "no second blank before the first trailer");
     }
 }

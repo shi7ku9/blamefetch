@@ -85,28 +85,28 @@ Output varies by machine and configuration. A sample run:
 ```text
 commit 2838daf6f0965b2da270de98d6b2c8d3a02870aa
 Author: shiziku <shiziku@localhost>
-Date: Thu Aug 6 05:32:10 2026 +0800
+Date:   Thu Aug 6 05:32:10 2026 +0800
 
-fix: blame the cache
+    fix: blame the cache
 
-Co-Authored-By: NixOS 26.11.0 <os@system.invalid>
-Co-Authored-By: Linux 6.18.38 <kernel@system.invalid>
-Co-Authored-By: Aspire AGM16-71P <host@system.invalid>
-Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>
-Co-Authored-By: shiziku <shiziku@users.local>
-Co-Authored-By: zsh 5.9.1 <shell@system.invalid>
-Co-Authored-By: xterm-kitty <terminal@system.invalid>
-Co-Authored-By: Hyprland <wm@system.invalid>
-Co-Authored-By: 7 days, 2 hours, 43 mins <uptime@system.invalid>
-Co-Authored-By: Intel(R) Core(TM) Ultra 5 225H (14 threads) @ 1.80 GHz <cpu@system.invalid>
-Co-Authored-By: Intel Corporation Arrow Lake-P [Arc Pro 130T/140T] [8086:7d51] (rev 03) <gpu@system.invalid>
-Co-Authored-By: 4.00 GiB / 30.88 GiB <memory@system.invalid>
-Co-Authored-By: 278.15 GiB / 467.40 GiB <disk@system.invalid>
-Co-Authored-By: en_US.UTF-8 <locale@system.invalid>
-Co-Authored-By: Nvim v0.12.4 <editor@user.invalid>
-Co-Authored-By: blamefetch 0.1.0 <self@blamefetch.invalid>
+    Co-Authored-By: NixOS 26.11.0 <os@system.invalid>
+    Co-Authored-By: Linux 6.18.38 <kernel@system.invalid>
+    Co-Authored-By: Aspire AGM16-71P <host@system.invalid>
+    Co-Authored-By: shiziku-laptop <shiziku-laptop@host.local>
+    Co-Authored-By: shiziku <shiziku@users.local>
+    Co-Authored-By: zsh 5.9.1 <shell@system.invalid>
+    Co-Authored-By: xterm-kitty <terminal@system.invalid>
+    Co-Authored-By: Hyprland <wm@system.invalid>
+    Co-Authored-By: 7 days, 2 hours, 43 mins <uptime@system.invalid>
+    Co-Authored-By: Intel(R) Core(TM) Ultra 5 225H (14 threads) @ 1.80 GHz <cpu@system.invalid>
+    Co-Authored-By: Intel Corporation Arrow Lake-P [Arc Pro 130T/140T] [8086:7d51] (rev 03) <gpu@system.invalid>
+    Co-Authored-By: 4.00 GiB / 30.88 GiB <memory@system.invalid>
+    Co-Authored-By: 278.15 GiB / 467.40 GiB <disk@system.invalid>
+    Co-Authored-By: en_US.UTF-8 <locale@system.invalid>
+    Co-Authored-By: Nvim v0.12.4 <editor@user.invalid>
+    Co-Authored-By: blamefetch 0.1.0 <self@blamefetch.invalid>
 
-Co-Authored-By: Claude 2.1.222 <noreply@anthropic.com>
+    Co-Authored-By: Claude 2.1.222 <noreply@anthropic.com>
 ```
 
 ## Configuration
