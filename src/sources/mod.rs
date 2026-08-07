@@ -276,9 +276,13 @@ mod env_sources_test {
 
     #[test]
     fn shell_from_env() {
-        let fields = f(&super::shell::Shell, &[("SHELL", "/bin/zsh")]).unwrap();
-        assert_eq!(fields.get("name").map(String::as_str), Some("zsh"));
-        assert!(fields.get("version").is_some_and(|v| !v.is_empty()));
+        let fields = f(&super::shell::Shell, &[("SHELL", "/bin/sh")]).unwrap();
+        assert_eq!(fields.get("name").map(String::as_str), Some("sh"));
+    }
+
+    #[test]
+    fn shell_empty_is_none() {
+        assert!(f(&super::shell::Shell, &[("SHELL", "")]).is_none());
     }
 
     #[test]

@@ -23,8 +23,8 @@
           };
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           src = pkgs.lib.cleanSource ./.;
-          # git for integration tests / runtime, zsh for the shell_from_env unit test.
-          nativeBuildInputs = [ pkgs.git pkgs.zsh ];
+          # git for integration tests / runtime.
+          nativeBuildInputs = [ pkgs.git ];
           # Vendored crates from Cargo.lock so the checks run offline in the build sandbox.
           cargoDeps = rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
           offlineCargo = ''
@@ -40,7 +40,7 @@
           overlayAttrs = inputs.rust-overlay.overlays.default final pkgs;
 
           devShells.default = pkgs.mkShell {
-            packages = [ toolchain pkgs.git pkgs.zsh ];
+            packages = [ toolchain pkgs.git ];
           };
 
           packages.default = rustPlatform.buildRustPackage {
@@ -61,7 +61,7 @@
               mkdir $out
             '';
             test = pkgs.runCommand "blamefetch-test"
-              { nativeBuildInputs = [ toolchain pkgs.git pkgs.zsh ]; } ''
+              { nativeBuildInputs = [ toolchain pkgs.git ]; } ''
               ${offlineCargo}
               cp -r ${src} src
               chmod -R +w src
