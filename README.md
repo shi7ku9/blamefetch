@@ -16,8 +16,8 @@ It never creates or modifies commits. It just prints.
 - Collects system information (OS, kernel, host, hostname, user, shell,
   terminal, window manager, uptime, CPU, GPU, memory, disk, locale) and renders
   each as a `Co-Authored-By` trailer.
-- Fully configurable through `~/.config/blamefetch/config.toml`, including
-  custom co-authors, message pools, and shell-command fields.
+- Fully configurable through `~/.config/blamefetch/config.json`, including
+  custom co-authors, plain text lines, message pools, and shell-command fields.
 - Reproducible output with `--seed` (except the `Date:` line, which is
   relative to the current time).
 - Optional colored output with `--color`.
@@ -112,26 +112,34 @@ Date:   Thu Aug 6 05:32:10 2026 +0800
 ## Configuration
 
 blamefetch embeds a default configuration and merges
-`~/.config/blamefetch/config.toml` on top of it (the exact path follows your
-platform's config directory). The main sections are:
+`~/.config/blamefetch/config.json` on top of it (the exact path follows your
+platform's config directory). The top-level keys are:
 
-- `[commit]` — fallback `author_name` / `author_email`, used only when no real
+- `commit` — fallback `author_name` / `author_email`, used only when no real
   repo commit is picked (outside a git repository, or with `--no-git`); a real
   commit's own author wins. `--author` / `--email` always force.
-- `[messages]` — the `pool` used for random commit messages.
-- `[[co_authors]]` — one entry per trailer, with `kind`, `enabled`, `name`,
-  `email`, `fields`, and `blank_line_before`.
+- `messages` — the `pool` used for random commit messages.
+- `sections` — one entry per output line: a co-author (object with
+  `name`/`email`/`fields`), or a plain text line (string value; an object with
+  a `text` key also supports `{placeholder}` fields).
+- `order` — the exact display list: only listed sections render, in listed
+  order; sections omitted from `order` are not shown.
 
 `name` and `email` support `{placeholder}` templates filled by `fields`; field
 values can be plain strings or shell commands:
 
-```toml
-[[co_authors]]
-name = "Nvim {nvim_version}"
-email = "editor@user.invalid"
-
-[co_authors.fields]
-nvim_version = { command = "nvim --version | cut -d' ' -f2 | cut -d$'\n' -f1", fallback = ""}
+```json
+{
+  "sections": {
+    "nvim": {
+      "name": "Nvim {nvim_version}",
+      "email": "editor@user.invalid",
+      "fields": {
+        "nvim_version": { "command": "nvim --version | cut -d' ' -f2", "fallback": "" }
+      }
+    }
+  }
+}
 ```
 
 blamefetch credits the machine by default and attributes no one else; anything
@@ -149,8 +157,9 @@ modifies commits or Git history. When inside a repository, it only runs
 read-only Git commands (`rev-parse`, `rev-list`, `log`).
 
 blamefetch does not execute shell commands on its own. Commands run only if you
-configure them in `[[co_authors]]` via `name`, `email`, or `fields` with
-`{ command = ... }`. Such commands run through your platform shell (`sh -c` on
+configure them in a `sections` entry via `name`, `email`, `fields`, or a text
+section's `fields` with `{ "command": ... }`. Such commands run through your
+platform shell (`sh -c` on
 Unix, `cmd /C` on Windows) with the same permissions as the user who started
 blamefetch, without a sandbox.
 

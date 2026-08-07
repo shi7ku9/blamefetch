@@ -19,7 +19,7 @@ fn main() -> ExitCode {
     let config = config::Config::load(cli.config.as_deref());
 
     if cli.print_config {
-        println!("{}", config.to_toml());
+        println!("{}", config.to_json());
         return ExitCode::SUCCESS;
     }
     if cli.list_sources {
@@ -75,14 +75,26 @@ fn main() -> ExitCode {
 
     let ctx = SourceContext::new();
     let mut cache = sources::CommandCache::new();
-    let mut co_authors = Vec::new();
-    for cfg in &config.co_authors {
-        if let Some(co_author) = sources::render_co_author(cfg, &ctx, &mut cache) {
-            co_authors.push(co_author);
+    let mut body_items = Vec::new();
+    for (key, entry) in config.ordered_sections() {
+        match entry {
+            config::SectionEntry::TextLine(line) => {
+                body_items.push(render::BodyItem::Text(line.clone()));
+            }
+            config::SectionEntry::TextField(tf) => {
+                if let Some(text) = sources::render_text(tf, &mut cache) {
+                    body_items.push(render::BodyItem::Text(text));
+                }
+            }
+            config::SectionEntry::CoAuthor(cfg) => {
+                if let Some(co_author) = sources::render_co_author(cfg, &key, &ctx, &mut cache) {
+                    body_items.push(render::BodyItem::Trailer(co_author));
+                }
+            }
         }
     }
 
     let opts = render::RenderOptions { color: cli.color };
-    print!("{}", render::render_commit(&git_data, &co_authors, &opts));
+    print!("{}", render::render_commit(&git_data, &body_items, &opts));
     ExitCode::SUCCESS
 }

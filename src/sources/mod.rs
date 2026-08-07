@@ -17,14 +17,13 @@ use std::collections::HashMap;
 
 use sysinfo::System;
 
-use crate::config::{CoAuthorConfig, FieldValue};
+use crate::config::{CoAuthorConfig, FieldValue, TextField};
 use crate::template::{collapse_whitespace, render};
 use crate::util::sh_output;
 
 pub struct CoAuthor {
     pub name: String,
     pub email: String,
-    pub blank_line_before: bool,
 }
 
 pub struct SourceContext {
@@ -115,8 +114,12 @@ impl CommandCache {
     }
 }
 
+/// Resolves one co-author section. `kind` is the section's map key: a known
+/// built-in kind pulls the source defaults; any other key is a config-only
+/// entry that must supply its own `name`/`email`.
 pub fn render_co_author(
     cfg: &CoAuthorConfig,
+    kind: &str,
     ctx: &SourceContext,
     cache: &mut CommandCache,
 ) -> Option<CoAuthor> {
@@ -124,17 +127,8 @@ pub fn render_co_author(
         return None;
     }
 
-    // Present kind → look up the built-in source; unknown kind is a silent skip.
-    let source = match &cfg.kind {
-        Some(kind) => match all_sources()
-            .into_iter()
-            .find(|s| s.kind() == kind.as_str())
-        {
-            Some(s) => Some(s),
-            None => return None,
-        },
-        None => None,
-    };
+    // Known kind → built-in source; unknown kind is a config-only entry.
+    let source = all_sources().into_iter().find(|s| s.kind() == kind);
 
     // Best-effort source fields; config `fields` override them below. If the
     // source produces nothing (e.g. no lspci), treat as an empty map — the
@@ -176,11 +170,21 @@ pub fn render_co_author(
     if name.is_empty() || email.is_empty() {
         return None;
     }
-    Some(CoAuthor {
-        name,
-        email,
-        blank_line_before: cfg.blank_line_before,
-    })
+    Some(CoAuthor { name, email })
+}
+
+/// Resolves a text section: fills `{placeholder}` templates from its `fields`
+/// (same command resolution and fail-closed rules as co-author fields).
+pub fn render_text(tf: &TextField, cache: &mut CommandCache) -> Option<String> {
+    let mut fields: HashMap<String, String> = HashMap::new();
+    for (key, fv) in &tf.fields {
+        let value = match fv {
+            FieldValue::Value(s) => s.clone(),
+            FieldValue::Command { .. } => resolve_command(fv, cache)?,
+        };
+        fields.insert(key.clone(), value);
+    }
+    Some(render(&tf.text, &fields))
 }
 
 fn resolve_command(fv: &FieldValue, cache: &mut CommandCache) -> Option<String> {
@@ -192,7 +196,7 @@ fn resolve_command(fv: &FieldValue, cache: &mut CommandCache) -> Option<String> 
                 Some(f) => Some(collapse_whitespace(f)),
                 None => {
                     eprintln!(
-                        "blamefetch: warning: command failed and no fallback: {command:?}; skipping trailer"
+                        "blamefetch: warning: command failed and no fallback: {command:?}; skipping section"
                     );
                     None
                 }
@@ -374,54 +378,48 @@ mod hardware_sources_test {
 mod co_author_test {
     use std::collections::BTreeMap;
 
-    use crate::config::{CoAuthorConfig, FieldValue};
-    use crate::sources::{CommandCache, SourceContext, render_co_author};
+    use crate::config::{CoAuthorConfig, FieldValue, TextField};
+    use crate::sources::{CommandCache, SourceContext, render_co_author, render_text};
 
     fn ctx() -> SourceContext {
         SourceContext::new()
     }
 
     fn entry(
-        kind: Option<&str>,
         name: Option<FieldValue>,
         email: Option<FieldValue>,
         fields: BTreeMap<String, FieldValue>,
     ) -> CoAuthorConfig {
         CoAuthorConfig {
-            kind: kind.map(str::to_string),
             enabled: true,
             name,
             email,
             fields,
-            blank_line_before: false,
         }
     }
 
     #[test]
     fn pure_config_static_entry_renders() {
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             BTreeMap::new(),
         );
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
         assert_eq!(ca.name, "Bot");
         assert_eq!(ca.email, "bot@x.com");
-        assert!(!ca.blank_line_before);
     }
 
     #[test]
     fn pure_config_missing_name_skips() {
         let cfg = entry(
             None,
-            None,
             Some(FieldValue::Value("bot@x.com".to_string())),
             BTreeMap::new(),
         );
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
     }
 
     #[cfg(unix)]
@@ -436,13 +434,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot {version}".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
         assert_eq!(ca.name, "Bot 5.0");
     }
 
@@ -458,13 +455,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot {version}".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
         assert_eq!(ca.name, "Bot unknown");
     }
 
@@ -480,13 +476,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot {version}".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
     }
 
     #[cfg(unix)]
@@ -501,13 +496,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot {version}".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
     }
 
     #[cfg(unix)]
@@ -522,13 +516,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("Bot".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
     }
 
     #[test]
@@ -542,15 +535,13 @@ mod co_author_test {
             },
         );
         let cfg = CoAuthorConfig {
-            kind: None,
             enabled: false,
             name: Some(FieldValue::Value("Bot {version}".to_string())),
             email: Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
-            blank_line_before: false,
         };
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
         assert!(
             cache.results.is_empty(),
             "disabled entries must not resolve commands"
@@ -580,13 +571,12 @@ mod co_author_test {
             },
         );
         let cfg = entry(
-            None,
             Some(FieldValue::Value("{a}{b}".to_string())),
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
         assert_eq!(ca.name, "xx");
         let count = std::fs::read_to_string(&marker)
             .map(|s| s.len())
@@ -602,7 +592,6 @@ mod co_author_test {
     #[test]
     fn name_as_command_is_used_verbatim() {
         let cfg = entry(
-            None,
             Some(FieldValue::Command {
                 command: "printf 'Bot {version}'".to_string(),
                 fallback: None,
@@ -611,7 +600,7 @@ mod co_author_test {
             BTreeMap::new(),
         );
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
         assert_eq!(
             ca.name, "Bot {version}",
             "command output is not re-templated"
@@ -619,37 +608,69 @@ mod co_author_test {
     }
 
     #[test]
-    fn unknown_kind_skips() {
-        let cfg = entry(
-            Some("nope"),
-            Some(FieldValue::Value("Bot".to_string())),
-            Some(FieldValue::Value("bot@x.com".to_string())),
-            BTreeMap::new(),
-        );
+    fn unknown_kind_without_name_or_email_skips() {
+        let cfg = entry(None, None, BTreeMap::new());
         let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, &ctx(), &mut cache).is_none());
+        assert!(render_co_author(&cfg, "nope", &ctx(), &mut cache).is_none());
     }
 
     #[test]
     fn kind_entry_uses_source_defaults() {
-        let cfg = entry(Some("os"), None, None, BTreeMap::new());
+        let cfg = entry(None, None, BTreeMap::new());
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
+        let ca = render_co_author(&cfg, "os", &ctx(), &mut cache).unwrap();
         assert!(!ca.name.is_empty());
         assert!(!ca.email.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn blank_line_before_flag_is_forwarded() {
-        let mut cfg = entry(
-            None,
-            Some(FieldValue::Value("Bot".to_string())),
-            Some(FieldValue::Value("bot@x.com".to_string())),
-            BTreeMap::new(),
+    fn render_text_with_command_field_substitutes() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "version".to_string(),
+            FieldValue::Command {
+                command: "printf 5.0".to_string(),
+                fallback: None,
+            },
         );
-        cfg.blank_line_before = true;
+        let tf = TextField {
+            text: "Generated by Bot {version}".to_string(),
+            fields,
+        };
         let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, &ctx(), &mut cache).unwrap();
-        assert!(ca.blank_line_before);
+        assert_eq!(
+            render_text(&tf, &mut cache).as_deref(),
+            Some("Generated by Bot 5.0")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn render_text_fails_closed_without_fallback() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "version".to_string(),
+            FieldValue::Command {
+                command: "false".to_string(),
+                fallback: None,
+            },
+        );
+        let tf = TextField {
+            text: "v{version}".to_string(),
+            fields,
+        };
+        let mut cache = CommandCache::new();
+        assert!(render_text(&tf, &mut cache).is_none());
+    }
+
+    #[test]
+    fn render_text_without_fields_is_verbatim() {
+        let tf = TextField {
+            text: "hello world".to_string(),
+            fields: BTreeMap::new(),
+        };
+        let mut cache = CommandCache::new();
+        assert_eq!(render_text(&tf, &mut cache).as_deref(), Some("hello world"));
     }
 }

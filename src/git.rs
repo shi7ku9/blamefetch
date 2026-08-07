@@ -145,6 +145,8 @@ mod tests {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
+    use std::collections::BTreeMap;
+
     use crate::config::{Config, MessagesConfig};
 
     use super::{GitData, GitShell, git_data, is_in_repo, random_hash, random_message};
@@ -202,7 +204,8 @@ mod tests {
             messages: MessagesConfig {
                 pool: vec!["one".into(), "two".into()],
             },
-            co_authors: vec![],
+            sections: BTreeMap::new(),
+            order: None,
         };
         assert!(["one", "two"].contains(&random_message(&config, &mut r).as_str()));
     }
@@ -262,7 +265,8 @@ mod tests {
             messages: MessagesConfig {
                 pool: vec!["hi".into()],
             },
-            co_authors: vec![],
+            sections: BTreeMap::new(),
+            order: None,
         };
         let data = GitData::random(&config, &mut rng());
         assert_eq!(data.message, "hi");

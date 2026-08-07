@@ -2,26 +2,53 @@ use std::collections::HashMap;
 
 pub fn render(template: &str, fields: &HashMap<String, String>) -> String {
     let mut out = String::new();
-    let mut rest = template;
-    while let Some(start) = rest.find('{') {
-        out.push_str(&rest[..start]);
-        match rest[start..].find('}') {
-            Some(end_rel) => {
-                if end_rel > 0 {
-                    let key = &rest[start + 1..start + end_rel];
-                    if let Some(val) = fields.get(key) {
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                if bytes.get(i + 1) == Some(&b'{') {
+                    // `{{` escapes a literal `{`.
+                    out.push('{');
+                    i += 2;
+                } else if let Some(rel) = template[i + 1..].find('}') {
+                    let key = &template[i + 1..i + 1 + rel];
+                    if key.is_empty() {
+                        // `{}` — an empty placeholder is not a placeholder;
+                        // keep it literal so bare braces can be printed.
+                        out.push_str("{}");
+                    } else if let Some(val) = fields.get(key) {
                         out.push_str(val);
                     }
+                    i += 1 + rel + 1;
+                } else {
+                    // Unclosed `{` — print the rest verbatim.
+                    out.push_str(&template[i..]);
+                    break;
                 }
-                rest = &rest[start + end_rel + 1..];
             }
-            None => {
-                out.push_str(&rest[start..]);
-                rest = "";
+            b'}' => {
+                if bytes.get(i + 1) == Some(&b'}') {
+                    // `}}` escapes a literal `}`.
+                    out.push('}');
+                    i += 2;
+                } else {
+                    out.push('}');
+                    i += 1;
+                }
+            }
+            _ => {
+                // Skip to the next brace in one jump (byte index is safe:
+                // braces are ASCII, and the found position is a char boundary).
+                let next = template[i + 1..]
+                    .find(['{', '}'])
+                    .map(|r| i + 1 + r)
+                    .unwrap_or(template.len());
+                out.push_str(&template[i..next]);
+                i = next;
             }
         }
     }
-    out.push_str(rest);
     collapse_whitespace(&out)
 }
 
@@ -65,10 +92,27 @@ mod tests {
     }
 
     #[test]
-    fn empty_placeholder_is_skipped_without_panicking() {
+    fn empty_placeholder_is_kept_literal() {
         let f = HashMap::new();
-        assert_eq!(render("a{}b", &f), "ab");
-        assert_eq!(render("{}", &f), "");
+        assert_eq!(render("a{}b", &f), "a{}b");
+        assert_eq!(render("{}", &f), "{}");
+        assert_eq!(render("{} {x}", &f), "{}");
+    }
+
+    #[test]
+    fn doubled_braces_are_literal_escapes() {
+        let f = HashMap::new();
+        assert_eq!(render("{{}}", &f), "{}");
+        assert_eq!(render("a {{ b }} c", &f), "a { b } c");
+        assert_eq!(render("pre }} post", &f), "pre } post");
+    }
+
+    #[test]
+    fn escaped_placeholder_is_not_substituted() {
+        let mut f = HashMap::new();
+        f.insert("bot_version".to_string(), "2.1.233".to_string());
+        assert_eq!(render("{bot_version}", &f), "2.1.233");
+        assert_eq!(render("{{bot_version}}", &f), "{bot_version}");
     }
 
     #[test]

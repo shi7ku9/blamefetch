@@ -1,0 +1,33 @@
+{
+  "messages": {
+    "pool": [
+      "feat: pretend the hardware helped",
+      "fix: blame the cache",
+      "chore: credit where credit is due",
+      "perf: co-authorship is a bottleneck",
+      "docs: add everyone to CONTRIBUTORS",
+      "refactor: delete a co-author",
+      "test: assert the hardware was here"
+    ]
+  },
+  "sections": {
+    "os":       { "name": "{name} {version}", "email": "os@system.invalid" },
+    "kernel":   { "name": "{name} {release}", "email": "kernel@system.invalid" },
+    "host":     { "name": "{product}", "email": "host@system.invalid" },
+    "hostname": { "name": "{hostname}", "email": "{hostname}@host.local" },
+    "user":     { "name": "{user}", "email": "{user}@users.local" },
+    "shell":    { "name": "{name} {version}", "email": "shell@system.invalid" },
+    "terminal": { "name": "{name}", "email": "terminal@system.invalid" },
+    "wm":       { "name": "{name}", "email": "wm@system.invalid" },
+    "uptime":   { "name": "{duration}", "email": "uptime@system.invalid" },
+    "cpu":      { "name": "{model} ({cores} threads) @ {freq}", "email": "cpu@system.invalid" },
+    "gpu":      { "name": "{name}", "email": "gpu@system.invalid" },
+    "memory":   { "name": "{used} / {total}", "email": "memory@system.invalid" },
+    "disk":     { "name": "{used} / {total}", "email": "disk@system.invalid" },
+    "locale":   { "name": "{locale}", "email": "locale@system.invalid" }
+  },
+  "order": [
+    "os", "kernel", "host", "hostname", "user", "shell", "terminal", "wm",
+    "uptime", "cpu", "gpu", "memory", "disk", "locale"
+  ]
+}
