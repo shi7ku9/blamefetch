@@ -137,6 +137,7 @@ fn resolve_body(
 }
 
 fn main() -> ExitCode {
+    util::install_interrupt_cleanup();
     let cli = Cli::parse();
     let config = config::Config::load(cli.config.as_deref());
 

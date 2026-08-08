@@ -615,6 +615,73 @@ fn all_sections_hanging_still_exits() {
     wait_for_no_process("^sleep 302$");
 }
 
+#[cfg(unix)]
+#[test]
+fn sigint_cleans_up_running_section_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    let marker = dir.path().join("started");
+    std::fs::write(
+        &cfg_path,
+        r#"{
+    "sections": {
+        "slow": {
+            "name": "Slow {v}",
+            "email": "slow@x.com",
+            "fields": { "v": { "command": "touch started && sleep 303" } }
+        }
+    }
+}"#,
+    )
+    .unwrap();
+    let mut child = bin()
+        .arg("--no-git")
+        .arg("--config")
+        .arg(&cfg_path)
+        .env("BLAMEFETCH_SECTION_TIMEOUT_MS", "60000")
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // Wait until the section command is actually running, then interrupt.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "section command did not start in time"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "blamefetch exited before receiving SIGINT"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let kill = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(kill.success(), "kill -INT failed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "blamefetch did not exit after SIGINT"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "expected the conventional SIGINT exit code (128+2), got {status:?}"
+    );
+    // The interrupted command must not outlive the run as an orphan.
+    wait_for_no_process("^sleep 303$");
+}
+
 #[test]
 fn utf8_config_renders_chinese_and_japanese() {
     let dir = tempfile::tempdir().unwrap();

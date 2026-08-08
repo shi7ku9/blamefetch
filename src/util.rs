@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// Child processes still running, keyed by PID. Registered while a command is
@@ -13,6 +13,41 @@ static RUNNING_CHILDREN: LazyLock<Mutex<HashSet<u32>>> =
 /// after this point must not spawn anything: its section was already reported
 /// as skipped, so a late spawn would only create an orphan.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// Signal number of the interrupt that terminated the run, if any.
+static INTERRUPTED: AtomicI32 = AtomicI32::new(0);
+
+/// Installs SIGINT/SIGTERM handlers plus a watcher that kills every tracked
+/// child and exits with 128+signal. Children now run in their own process
+/// group, so a terminal interrupt would otherwise leave them running.
+#[cfg(unix)]
+pub fn install_interrupt_cleanup() {
+    extern "C" fn on_signal(sig: libc::c_int) {
+        INTERRUPTED.store(sig, Ordering::Relaxed);
+    }
+    // SAFETY: installs a handler that only stores to an atomic (async-signal-
+    // safe); SIGINT/SIGTERM are always valid signals.
+    unsafe {
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+    }
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let sig = INTERRUPTED.load(Ordering::Relaxed);
+            if sig != 0 {
+                kill_running_children();
+                std::process::exit(128 + sig);
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+pub fn install_interrupt_cleanup() {
+    // No POSIX signals to install; the platform's default Ctrl-C handling
+    // stays in effect.
+}
 
 /// Spawns a child and registers it under the same lock as the kill scan, so
 /// no command can appear after `kill_running_children` has looked. On Unix the
@@ -82,11 +117,10 @@ pub fn is_cancelled() -> bool {
 /// compound `sh -c` pipelines are covered too. Signals, not privileges: this
 /// is cleanup, not a security boundary.
 ///
-/// Tradeoff: children run in their own process group, so a terminal Ctrl-C
-/// (SIGINT to the foreground group) no longer reaches them — interrupting
-/// blamefetch while a command runs leaves that command running. Cleaning up on
-/// SIGINT would need a signal handler; accepted in exchange for pipeline
-/// coverage.
+/// Children run in their own process group, so a terminal Ctrl-C (SIGINT to
+/// the foreground group) does not reach them; [`install_interrupt_cleanup`]
+/// covers the interrupt path with a signal handler plus a watcher that calls
+/// this before exiting with 128+signal.
 #[cfg(unix)]
 pub fn kill_running_children() {
     let children = RUNNING_CHILDREN.lock().unwrap();
