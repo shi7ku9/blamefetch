@@ -52,6 +52,16 @@ canonical order (`os`, `kernel`, `host`, `hostname`, `user`, `shell`,
 `terminal`, `wm`, `uptime`, `cpu`, `gpu`, `memory`, `disk`, `locale`), then any
 other keys alphabetically.
 
+Unrecognized keys at any level — a typo such as `naem` or `sectionss` — are
+ignored (serde cannot reject them inside the flexible section shapes), and
+blamefetch prints one warning listing every offending dotted path:
+
+```text
+blamefetch: warning: unrecognized config key(s) ignored: sections.os.naem, sectionss
+```
+
+The config still loads; fix the typo to make the warning go away.
+
 ## Co-author fields
 
 Each co-author section has:
@@ -136,7 +146,8 @@ too, give the text section a `fields` object:
         "nvim_version": { "command": "nvim --version | cut -d' ' -f2 | cut -d$'\\n' -f1", "fallback": "" }
       }
     }
-  }
+  },
+  "order": ["nvim"]
 }
 ```
 
@@ -146,6 +157,11 @@ The first line of `nvim --version` is `NVIM v0.12.4`; the pipeline extracts
 ```text
 Co-Authored-By: Nvim v0.12.4 <editor@user.invalid>
 ```
+
+The `order` keeps the output to this one trailer. Sections merge into the
+built-in roster per key, so without it the machine rows (os, kernel, …) render
+first and `nvim` is appended after them — see
+[Combining with built-in sources](#combining-with-built-in-sources).
 
 Note: blamefetch already trims command output, so the trailing-newline cut is
 redundant but harmless. The `$'...'` syntax requires a shell that supports
@@ -164,7 +180,8 @@ do not). In JSON, backslashes must be doubled (`\\n`).
         "git_version": { "command": "git --version | cut -d' ' -f3", "fallback": "" }
       }
     }
-  }
+  },
+  "order": ["git"]
 }
 ```
 
@@ -189,7 +206,8 @@ blamefetch can also credit itself:
         "version": { "command": "blamefetch --version | cut -d' ' -f2", "fallback": "" }
       }
     }
-  }
+  },
+  "order": ["blamefetch"]
 }
 ```
 
