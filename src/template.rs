@@ -39,10 +39,12 @@ pub fn render(template: &str, fields: &HashMap<String, String>) -> String {
             }
             _ => {
                 // Skip to the next brace in one jump (byte index is safe:
-                // braces are ASCII, and the found position is a char boundary).
-                let next = template[i + 1..]
+                // braces are ASCII, so the found position is a char boundary;
+                // searching from `i` keeps the start on a boundary even when
+                // the current character is multibyte UTF-8).
+                let next = template[i..]
                     .find(['{', '}'])
-                    .map(|r| i + 1 + r)
+                    .map(|r| i + r)
                     .unwrap_or(template.len());
                 out.push_str(&template[i..next]);
                 i = next;
@@ -113,6 +115,22 @@ mod tests {
         f.insert("bot_version".to_string(), "2.1.233".to_string());
         assert_eq!(render("{bot_version}", &f), "2.1.233");
         assert_eq!(render("{{bot_version}}", &f), "{bot_version}");
+    }
+
+    #[test]
+    fn utf8_text_is_not_split_at_byte_boundaries() {
+        let mut f = HashMap::new();
+        f.insert("rank".to_string(), "SSS".to_string());
+        assert_eq!(
+            render("貓娘 shi7ku9 {rank}", &f),
+            "貓娘 shi7ku9 SSS",
+            "multibyte text before a placeholder must render verbatim"
+        );
+        assert_eq!(
+            render("今日も猫娘 shi7ku9 と一緒に頑張るにゃ！", &HashMap::new()),
+            "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！",
+            "plain UTF-8 text without braces must render verbatim"
+        );
     }
 
     #[test]

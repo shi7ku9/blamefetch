@@ -460,3 +460,72 @@ fn failing_command_without_fallback_skips_trailer() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("blamefetch: warning:"), "stderr: {stderr}");
 }
+
+#[test]
+fn utf8_config_renders_chinese_and_japanese() {
+    let dir = tempfile::tempdir().unwrap();
+    // Shared UTF-8 fixture: catgirl shi7ku9 content in Chinese and Japanese
+    // ("shi7ku9" is a name and must stay untranslated).
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/utf8-shi7ku9.json");
+    let out = bin()
+        .arg("--no-git")
+        .arg("--seed")
+        .arg("42")
+        .arg("--config")
+        .arg(&fixture)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("Author: 貓娘 shi7ku9 <neko@shi7ku9.example>"),
+        "Chinese author from config must render:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("    feat: 貓娘 shi7ku9 參上！"),
+        "Chinese message from the config pool must render:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("    今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"),
+        "Japanese text line must render:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("    猫娘 shi7ku9 参上！にゃん"),
+        "Japanese text-field line must render:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("    Co-Authored-By: 貓娘 shi7ku9 SSS <neko@shi7ku9.example>"),
+        "Chinese co-author trailer with filled field must render:\n{stdout}"
+    );
+}
+
+#[test]
+fn utf8_config_print_config_preserves_chinese_and_japanese() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/utf8-shi7ku9.json");
+    let out = bin()
+        .arg("--print-config")
+        .arg("--config")
+        .arg(&fixture)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("貓娘 shi7ku9"),
+        "Chinese catgirl name must survive --print-config:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"),
+        "Japanese text must survive --print-config:\n{stdout}"
+    );
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["commit"]["author_name"], "貓娘 shi7ku9");
+    assert_eq!(
+        parsed["sections"]["メモ"],
+        "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"
+    );
+    assert_eq!(parsed["sections"]["貓娘"]["name"], "貓娘 shi7ku9 {rank}");
+    assert_eq!(parsed["messages"]["pool"][0], "feat: 貓娘 shi7ku9 參上！");
+}

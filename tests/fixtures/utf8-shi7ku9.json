@@ -1,0 +1,19 @@
+{
+  "commit": {
+    "author_name": "貓娘 shi7ku9",
+    "author_email": "neko@shi7ku9.example"
+  },
+  "messages": {
+    "pool": ["feat: 貓娘 shi7ku9 參上！"]
+  },
+  "sections": {
+    "メモ": "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！",
+    "greeting": { "text": "猫娘 shi7ku9 参上！にゃん" },
+    "貓娘": {
+      "name": "貓娘 shi7ku9 {rank}",
+      "email": "neko@shi7ku9.example",
+      "fields": { "rank": "SSS" }
+    }
+  },
+  "order": ["メモ", "greeting", "貓娘"]
+}
