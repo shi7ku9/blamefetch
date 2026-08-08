@@ -12,13 +12,7 @@ pub struct RealGit;
 
 impl GitShell for RealGit {
     fn output(&self, args: &[&str]) -> Option<String> {
-        std::process::Command::new("git")
-            .args(args)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
+        crate::util::cmd_output("git", args)
     }
 }
 
