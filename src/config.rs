@@ -261,6 +261,20 @@ fn unknown_keys(value: &serde_json::Value) -> Vec<String> {
             if let Some(fields) = obj.get("fields") {
                 check_fields(fields, &format!("{base}.fields"), &mut out);
             }
+            if !obj.contains_key("text") {
+                // A co-author's `name`/`email` may be command objects; flag
+                // typos inside them just like in `fields`.
+                for field in ["name", "email"] {
+                    if let Some(fv) = obj.get(field).filter(|v| v.is_object()) {
+                        check_object(
+                            Some(fv),
+                            &format!("{base}.{field}"),
+                            &["command", "fallback"],
+                            &mut out,
+                        );
+                    }
+                }
+            }
         }
     }
     out.into_iter().collect()
@@ -821,5 +835,18 @@ mod tests {
             "order": ["note", "other"]
         }"#;
         assert!(unknown(text).is_empty());
+    }
+
+    #[test]
+    fn name_and_email_command_objects_are_walked() {
+        let text = r#"{
+            "sections": {
+                "x": {
+                    "name": { "command": "printf hi", "typo": 1 },
+                    "email": { "command": "printf e", "fallback": "" }
+                }
+            }
+        }"#;
+        assert_eq!(unknown(text), vec!["sections.x.name.typo"]);
     }
 }
