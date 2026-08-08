@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -108,13 +108,16 @@ impl Config {
 
         if let Some(path) = path.filter(|p| p.exists()) {
             match std::fs::read_to_string(&path) {
-                Ok(text) => match serde_json::from_str::<Config>(&text) {
-                    Ok(user) => cfg.merge(user),
-                    Err(err) => eprintln!(
-                        "blamefetch: warning: failed to parse config {}: {err}; using defaults",
-                        path.display()
-                    ),
-                },
+                Ok(text) => {
+                    report_unknown_keys(&text);
+                    match serde_json::from_str::<Config>(&text) {
+                        Ok(user) => cfg.merge(user),
+                        Err(err) => eprintln!(
+                            "blamefetch: warning: failed to parse config {}: {err}; using defaults",
+                            path.display()
+                        ),
+                    }
+                }
                 Err(err) => eprintln!(
                     "blamefetch: warning: cannot read config {}: {err}; using defaults",
                     path.display()
@@ -196,6 +199,96 @@ impl Config {
 
 fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("blamefetch").join("config.json"))
+}
+
+/// Warns about unrecognized keys in a config file. serde's untagged enums
+/// (`SectionEntry`, `FieldValue`) make `deny_unknown_fields` unusable — it
+/// would reject the whole config with a generic error — so a plain value walk
+/// flags each offending key path without failing the parse.
+fn report_unknown_keys(text: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return; // serde's own parse will report the syntax error
+    };
+    let unknown = unknown_keys(&value);
+    if !unknown.is_empty() {
+        eprintln!(
+            "blamefetch: warning: unrecognized config key(s) ignored: {}",
+            unknown.join(", ")
+        );
+    }
+}
+
+/// Recognized keys per level. `BTreeSet` keeps the result sorted and deduped
+/// so the warning is deterministic.
+fn unknown_keys(value: &serde_json::Value) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    check_object(
+        Some(value),
+        "",
+        &["commit", "messages", "sections", "order"],
+        &mut out,
+    );
+    check_object(
+        value.get("commit"),
+        "commit",
+        &["author_name", "author_email"],
+        &mut out,
+    );
+    check_object(value.get("messages"), "messages", &["pool"], &mut out);
+
+    if let Some(sections) = value.get("sections").and_then(|v| v.as_object()) {
+        for (key, entry) in sections {
+            let base = format!("sections.{key}");
+            let Some(obj) = entry.as_object() else {
+                continue; // a string is a TextLine
+            };
+            // An object with a `text` key is a TextField shape; without one it
+            // is a co-author shape (serde's untagged rule).
+            let allowed = if obj.contains_key("text") {
+                &["text", "fields"][..]
+            } else {
+                &["enabled", "name", "email", "fields"][..]
+            };
+            check_object(Some(entry), &base, allowed, &mut out);
+            if let Some(fields) = obj.get("fields") {
+                check_fields(fields, &format!("{base}.fields"), &mut out);
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn check_fields(value: &serde_json::Value, base: &str, out: &mut BTreeSet<String>) {
+    let Some(map) = value.as_object() else {
+        return; // `fields` must be an object; serde will reject it otherwise
+    };
+    for (key, fv) in map {
+        let path = format!("{base}.{key}");
+        if fv.is_object() {
+            check_object(Some(fv), &path, &["command", "fallback"], out);
+        }
+    }
+}
+
+fn check_object(
+    value: Option<&serde_json::Value>,
+    base: &str,
+    allowed: &[&str],
+    out: &mut BTreeSet<String>,
+) {
+    let Some(map) = value.and_then(|v| v.as_object()) else {
+        return;
+    };
+    for key in map.keys() {
+        let path = if base.is_empty() {
+            key.clone()
+        } else {
+            format!("{base}.{key}")
+        };
+        if !allowed.contains(&key.as_str()) {
+            out.insert(path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -607,5 +700,77 @@ mod tests {
             }
             _ => panic!("expected CoAuthor"),
         }
+    }
+
+    fn unknown(text: &str) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        super::unknown_keys(&value)
+    }
+
+    #[test]
+    fn unknown_config_keys_are_reported() {
+        let text = r#"{
+            "sectionss": {},
+            "commit": { "author_nmae": "x" },
+            "sections": {
+                "os": { "naem": "y" },
+                "line": { "text": "hi", "typo": 1 },
+                "bot": { "fields": { "v": { "command": "x", "falback": "" } } }
+            }
+        }"#;
+        assert_eq!(
+            unknown(text),
+            vec![
+                "commit.author_nmae",
+                "sections.bot.fields.v.falback",
+                "sections.line.typo",
+                "sections.os.naem",
+                "sectionss",
+            ]
+        );
+    }
+
+    #[test]
+    fn known_config_keys_are_not_reported() {
+        let text = r#"{
+            "commit": { "author_name": "A", "author_email": "a@x.com" },
+            "messages": { "pool": ["hi"] },
+            "sections": {
+                "note": "plain text",
+                "dynamic": { "text": "Hello {name}", "fields": { "name": "world" } },
+                "bot": {
+                    "enabled": true,
+                    "name": "Bot",
+                    "email": "bot@x.com",
+                    "fields": { "v": { "command": "x", "fallback": "" } }
+                }
+            },
+            "order": ["note", "dynamic", "bot"]
+        }"#;
+        assert!(unknown(text).is_empty());
+    }
+
+    #[test]
+    fn section_shape_selects_allowed_keys() {
+        // An object with `text` is a TextField: co-author keys are unknown.
+        assert_eq!(
+            unknown(r#"{"sections": {"s": { "text": "hi", "name": "x" }}}"#),
+            vec!["sections.s.name"]
+        );
+        // Without `text` it is a co-author: unknown keys are reported there.
+        assert_eq!(
+            unknown(r#"{"sections": {"s": { "name": "x", "email": "y", "typo": 1 }}}"#),
+            vec!["sections.s.typo"]
+        );
+    }
+
+    #[test]
+    fn string_and_array_values_ignored() {
+        let text = r#"{
+            "messages": { "pool": ["hi", "there"] },
+            "sections": { "note": "plain", "other": "text" },
+            "order": ["note", "other"]
+        }"#;
+        assert!(unknown(text).is_empty());
     }
 }
