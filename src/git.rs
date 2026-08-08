@@ -43,8 +43,13 @@ impl GitData {
 /// Why a `--commit <PREFIX>` lookup failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError {
+    /// The prefix is empty or not hexadecimal, so it can never match.
+    InvalidPrefix,
     /// No commit hash in the repository starts with the prefix.
     NoMatch,
+    /// The repository could not be read (git failed), so the lookup cannot
+    /// be completed.
+    GitFailed,
     /// Exactly one commit matched, but its commit data could not be read.
     ReadFailed,
     /// More than one commit hash starts with the prefix; the candidates are
@@ -79,15 +84,16 @@ fn commit_data(shell: &dyn GitShell, hash: &str) -> Option<GitData> {
 /// Finds the commit whose hash starts with `prefix` (case-insensitive) among
 /// every commit reachable from any ref (`rev-list --all`, the same universe
 /// as the random picker). Exactly one match selects that commit; zero and
-/// multiple matches are errors.
+/// multiple matches are errors, as are a non-hex `prefix` and a failed
+/// `rev-list` (the repository could not be read).
 pub fn commit_by_prefix(shell: &dyn GitShell, prefix: &str) -> Result<GitData, CommitError> {
     let prefix = prefix.to_ascii_lowercase();
     if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(CommitError::NoMatch);
+        return Err(CommitError::InvalidPrefix);
     }
     let all = shell
         .output(&["rev-list", "--all"])
-        .ok_or(CommitError::NoMatch)?;
+        .ok_or(CommitError::GitFailed)?;
     let matches: Vec<String> = all
         .lines()
         .map(str::trim)
@@ -102,10 +108,13 @@ pub fn commit_by_prefix(shell: &dyn GitShell, prefix: &str) -> Result<GitData, C
     }
 }
 
+/// True when the current directory is inside a Git repository (work tree or
+/// bare). `rev-parse --git-dir` succeeds for both, unlike
+/// `--is-inside-work-tree`, which reports `false` in a bare repository.
 pub fn is_in_repo(shell: &dyn GitShell) -> bool {
     shell
-        .output(&["rev-parse", "--is-inside-work-tree"])
-        .map(|s| s == "true")
+        .output(&["rev-parse", "--git-dir"])
+        .map(|s| !s.is_empty())
         .unwrap_or(false)
 }
 
@@ -220,10 +229,7 @@ mod tests {
     #[test]
     fn is_in_repo_true() {
         let mut g = FakeGit::default();
-        g.set(
-            &["rev-parse", "--is-inside-work-tree"],
-            Some("true".to_string()),
-        );
+        g.set(&["rev-parse", "--git-dir"], Some(".git".to_string()));
         assert!(is_in_repo(&g));
     }
 
@@ -258,10 +264,7 @@ mod tests {
     #[test]
     fn git_data_in_repo() {
         let mut g = FakeGit::default();
-        g.set(
-            &["rev-parse", "--is-inside-work-tree"],
-            Some("true".to_string()),
-        );
+        g.set(&["rev-parse", "--git-dir"], Some(".git".to_string()));
         g.set(&["rev-list", "--all"], Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()));
         // Respond for both candidate hashes so the test holds regardless of which
         // seed 42 picks (commit author comes from the commit itself, not git config).
@@ -375,19 +378,26 @@ mod tests {
     #[test]
     fn commit_by_prefix_rejects_empty_and_non_hex() {
         let g = fake_with_hashes(&["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
-        assert_eq!(commit_by_prefix(&g, "").unwrap_err(), CommitError::NoMatch);
+        assert_eq!(
+            commit_by_prefix(&g, "").unwrap_err(),
+            CommitError::InvalidPrefix
+        );
         assert_eq!(
             commit_by_prefix(&g, "xyz").unwrap_err(),
-            CommitError::NoMatch
+            CommitError::InvalidPrefix
+        );
+        assert_eq!(
+            commit_by_prefix(&g, "你").unwrap_err(),
+            CommitError::InvalidPrefix
         );
     }
 
     #[test]
-    fn commit_by_prefix_missing_rev_list_is_no_match() {
+    fn commit_by_prefix_missing_rev_list_is_git_failed() {
         let g = FakeGit::default();
         assert_eq!(
             commit_by_prefix(&g, "aaaa").unwrap_err(),
-            CommitError::NoMatch
+            CommitError::GitFailed
         );
     }
 

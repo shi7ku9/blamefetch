@@ -189,9 +189,21 @@ fn main() -> ExitCode {
                 }
                 return ExitCode::FAILURE;
             }
+            Err(git::CommitError::InvalidPrefix) => {
+                eprintln!(
+                    "blamefetch: error: --commit '{prefix}' is not a valid commit prefix (must be a non-empty hexadecimal hash)"
+                );
+                return ExitCode::FAILURE;
+            }
             Err(git::CommitError::NoMatch) => {
                 eprintln!(
-                    "blamefetch: error: --commit '{prefix}' does not match any commit in this repository (must be a non-empty hexadecimal hash prefix)"
+                    "blamefetch: error: --commit '{prefix}' does not match any commit in this repository"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(git::CommitError::GitFailed) => {
+                eprintln!(
+                    "blamefetch: error: --commit '{prefix}': git failed while looking up commits"
                 );
                 return ExitCode::FAILURE;
             }

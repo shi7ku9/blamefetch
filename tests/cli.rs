@@ -178,9 +178,16 @@ fn commit_flag_short_uppercase_prefix_matches() {
     let repo = make_repo();
     let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
     let head = head.trim().to_string();
+    // Include at least one letter in the prefix so the uppercasing is a real
+    // transformation; an all-digit prefix would make the case fold vacuous.
+    // A 40-digit hash is theoretically possible, so fall back to a 39-char
+    // prefix (still a unique match) instead of assuming a letter exists.
+    let letter_idx = head
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(head.len() - 1);
     let out = bin()
         .arg("--commit")
-        .arg(head[..8].to_uppercase())
+        .arg(head[..=letter_idx].to_uppercase())
         .current_dir(repo.path())
         .output()
         .unwrap();
@@ -392,6 +399,193 @@ fn commit_flag_author_and_message_overrides() {
     );
     assert!(stdout.contains("Author: CLI User <cli@x.com>"), "{stdout}");
     assert!(stdout.contains("    forced message"), "{stdout}");
+}
+
+#[test]
+fn commit_flag_unicode_prefix_errors() {
+    let repo = make_repo();
+    let out = bin()
+        .arg("--commit")
+        .arg("你")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("not a valid commit prefix"),
+        "a non-hex prefix must be rejected as invalid:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_multiline_message_renders() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    git(repo.path(), &["config", "user.name", "Test User"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.path().join("a.txt"), "hi\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(
+        repo.path(),
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "first line",
+            "-m",
+            "second line",
+        ],
+    );
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg(head.trim())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("    first line"), "{stdout}");
+    assert!(stdout.contains("    second line"), "{stdout}");
+}
+
+#[test]
+fn commit_flag_percent_message_passes_through() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    git(repo.path(), &["config", "user.name", "Test User"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.path().join("a.txt"), "hi\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(
+        repo.path(),
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "%s %B %n stays literal",
+        ],
+    );
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg(head.trim())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("    %s %B %n stays literal"),
+        "message must be rendered verbatim, never re-expanded:\n{stdout}"
+    );
+}
+
+#[test]
+fn commit_flag_empty_message_commit_renders() {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    git(repo.path(), &["config", "user.name", "Test User"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.path().join("a.txt"), "hi\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(
+        repo.path(),
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty-message",
+            "-m",
+            "",
+        ],
+    );
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg(head.trim())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("Author: Test User <test@example.com>"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn commit_flag_from_subdirectory() {
+    let repo = make_repo();
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim().to_string();
+    std::fs::create_dir(repo.path().join("sub")).unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg(&head)
+        .current_dir(repo.path().join("sub"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {head}\n")),
+        "should find the repo from a subdirectory:\n{stdout}"
+    );
+}
+
+#[test]
+fn commit_flag_selects_stash_commit() {
+    let repo = make_repo();
+    // A change in the working tree, then stash it: refs/stash becomes a ref,
+    // so rev-list --all (the lookup universe) includes the stash commit.
+    std::fs::write(repo.path().join("a.txt"), "bye\n").unwrap();
+    git(repo.path(), &["stash", "-q"]);
+    let stash = String::from_utf8(git(repo.path(), &["rev-parse", "refs/stash"]).stdout).unwrap();
+    let stash = stash.trim().to_string();
+    let out = bin()
+        .arg("--commit")
+        .arg(&stash)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {stash}\n")),
+        "a stash commit must be selectable:\n{stdout}"
+    );
+}
+
+#[test]
+fn commit_flag_works_in_bare_repo() {
+    let repo = make_repo();
+    let bare = repo.path().join("bare");
+    git(
+        repo.path(),
+        &["clone", "-q", "--bare", ".", bare.to_str().unwrap()],
+    );
+    let head = String::from_utf8(git(&bare, &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim();
+    let out = bin()
+        .arg("--commit")
+        .arg(&head[..8])
+        .current_dir(&bare)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {head}\n")),
+        "a bare repository must be treated as a repository:\n{stdout}"
+    );
 }
 
 #[test]
