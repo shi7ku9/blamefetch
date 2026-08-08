@@ -37,7 +37,7 @@ fn section_timeout_ms(raw: Option<&str>) -> u64 {
 /// section that does not finish within `timeout` is skipped with a warning.
 /// Workers are deliberately never joined: a thread stuck in a blocking
 /// syscall (e.g. statfs on a hung NFS mount) must not hold up the run —
-/// process exit reaps it, and a late worker's send is dropped with the
+/// process exit terminates it, and a late worker's send is dropped with the
 /// receiver.
 fn resolve_body(
     sections: &[(String, &config::SectionEntry)],

@@ -272,6 +272,8 @@ distinguishing machine credits from tool credits (here `os`, `kernel`, and
 ## Safety
 
 Commands configured in `fields`, `name`, `email`, or a text section's `fields`
-run with your user's permissions and are not sandboxed. Only configure commands
-you trust, and only run config files whose contents you have reviewed. See the
-security section of the [README](../README.md#security-and-liability).
+are not sandboxed and run with blamefetch's own permissions — normally your
+user's, but elevated if blamefetch itself runs via `sudo` or a service. Only
+configure commands you trust, and only run config files whose contents you
+have reviewed. See the security section of the
+[README](../README.md#security-and-liability).

@@ -181,8 +181,13 @@ fish, nu, elvish, xonsh, and pwsh). No other commands run on their own.
 Commands run only if you configure them in a `sections` entry via `name`,
 `email`, `fields`, or a text section's `fields` with `{ "command": ... }`.
 Such commands run through your platform shell (`sh -c` on
-Unix, `cmd /C` on Windows) with the same permissions as the user who started
-blamefetch, without a sandbox.
+Unix, `cmd /C` on Windows) without a sandbox, with blamefetch's own
+permissions — normally the invoking user's. If you run blamefetch with
+elevated privileges (e.g. via `sudo` or as a service), those commands run
+with the elevated privileges, and the shell probe may execute a path chosen
+by a lower-privileged ancestor process. Do not run blamefetch with elevated
+privileges unless you also trust the config and the shell environment it
+detects.
 
 Only run config files you trust. You are responsible for reviewing any
 configuration — including any commands inside it — before running blamefetch.

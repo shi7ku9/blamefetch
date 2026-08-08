@@ -128,8 +128,10 @@ fn find_shell_in_chain(
 /// bare name is never resolved through PATH. That is not a security boundary
 /// though: a parent process controls its own argv, so it can name any file
 /// like a shell (e.g. `python3 /tmp/evil/bash`) and have the `--version`
-/// probe run it. Such a parent already has this process's privileges, so no
-/// privilege is gained.
+/// probe run it. Normally that parent and this process share the same
+/// privileges, so nothing is gained; if blamefetch runs elevated (via `sudo`,
+/// a service manager, or setuid), the probe executes input from a
+/// lower-privileged parent chain and must be treated as untrusted.
 fn process_shell_candidates(exe: Option<&Path>, cmd: &[OsString]) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(exe) = exe.filter(|p| !p.as_os_str().is_empty()) {
