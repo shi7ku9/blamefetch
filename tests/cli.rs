@@ -495,6 +495,27 @@ fn failing_command_without_fallback_skips_trailer() {
     assert!(stderr.contains("blamefetch: warning:"), "stderr: {stderr}");
 }
 
+/// Polls until no process matches the marker (SIGKILL delivery is async).
+#[cfg(unix)]
+fn wait_for_no_process(marker: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let found = Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !found {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process {marker:?} still alive 2s after the run"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn hanging_section_is_skipped_after_timeout() {
@@ -507,7 +528,7 @@ fn hanging_section_is_skipped_after_timeout() {
         "slow": {
             "name": "Slow {v}",
             "email": "slow@x.com",
-            "fields": { "v": { "command": "sleep 30" } }
+            "fields": { "v": { "command": "sleep 301" } }
         },
         "fast": { "name": "Fast", "email": "fast@x.com" }
     }
@@ -540,6 +561,8 @@ fn hanging_section_is_skipped_after_timeout() {
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("did not finish"), "stderr: {stderr}");
+    // The timed-out command must not outlive the run as an orphan.
+    wait_for_no_process("^sleep 301$");
 }
 
 #[cfg(unix)]
@@ -554,7 +577,7 @@ fn all_sections_hanging_still_exits() {
         "slow": {
             "name": "Slow {v}",
             "email": "slow@x.com",
-            "fields": { "v": { "command": "sleep 30" } }
+            "fields": { "v": { "command": "sleep 302" } }
         }
     }
 }"#,
@@ -578,13 +601,13 @@ fn all_sections_hanging_still_exits() {
         elapsed.as_secs() < 10,
         "the run must still exit promptly (took {elapsed:?})"
     );
-    // The orphaned `sleep 30` child lingers up to 30 s — harmless, and the
-    // process itself has already exited.
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
         !stdout.contains("Slow"),
         "hung section must be skipped:\n{stdout}"
     );
+    // The timed-out command must not outlive the run as an orphan.
+    wait_for_no_process("^sleep 302$");
 }
 
 #[test]

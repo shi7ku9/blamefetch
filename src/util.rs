@@ -1,11 +1,34 @@
-pub fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
+
+/// Child processes still running, keyed by PID. Registered while a command is
+/// awaited so that `kill_running_children` can reap a timed-out section's
+/// command instead of leaving it as an orphan.
+static RUNNING_CHILDREN: LazyLock<Mutex<HashSet<u32>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Waits for a spawned child, keeping it registered while it runs. Returns
+/// trimmed stdout, or `None` on spawn failure / non-zero exit / non-UTF-8
+/// output. Empty output is NOT filtered here — callers decide (fail-closed
+/// treats empty as failure).
+fn run_output(child: std::process::Child) -> Option<String> {
+    let pid = child.id();
+    RUNNING_CHILDREN.lock().unwrap().insert(pid);
+    let out = child.wait_with_output().ok();
+    RUNNING_CHILDREN.lock().unwrap().remove(&pid);
+    out.filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
+}
+
+pub fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
+    let child = std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    run_output(child)
 }
 
 /// Run a user-supplied command through the platform shell so pipes/globs work.
@@ -18,14 +41,37 @@ pub fn sh_output(command: &str) -> Option<String> {
     } else {
         ("sh", "-c")
     };
-    std::process::Command::new(program)
+    let child = std::process::Command::new(program)
         .arg(flag)
         .arg(command)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    run_output(child)
+}
+
+/// Kills every command still running. Call after section resolution: anything
+/// still registered belongs to a section that timed out, and without this the
+/// child would outlive us as an orphan. Kills the direct child PID — for
+/// `sh -c` with a single command the shell has exec'd, so the child IS the
+/// program; grandchildren of compound pipelines are a documented residual.
+/// Signals, not privileges: this is cleanup, not a security boundary.
+#[cfg(unix)]
+pub fn kill_running_children() {
+    let children = RUNNING_CHILDREN.lock().unwrap();
+    for &pid in children.iter() {
+        // SAFETY: kill(2) on the PID of our own spawned child.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_running_children() {
+    // No portable kill-by-PID from std on Windows; the orphan window stays a
+    // documented residual there.
 }
 
 pub fn format_bytes(bytes: u64) -> String {

@@ -194,6 +194,9 @@ fn main() -> ExitCode {
     let cache = Arc::new(sources::CommandCache::new());
     let sections: Vec<(String, &config::SectionEntry)> = config.ordered_sections();
     let body_items = resolve_body(&sections, &ctx, &cache, timeout);
+    // A section that timed out leaves its command running; kill it so it does
+    // not outlive this process as an orphan.
+    util::kill_running_children();
 
     let opts = render::RenderOptions { color: cli.color };
     print!("{}", render::render_commit(&git_data, &body_items, &opts));

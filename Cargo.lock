@@ -82,6 +82,7 @@ dependencies = [
  "colored",
  "dirs",
  "hostname",
+ "libc",
  "os_info",
  "rand",
  "serde",
