@@ -215,7 +215,9 @@ mod env_sources_test {
 
     fn ctx(env: &[(&str, &str)]) -> SourceContext {
         SourceContext {
-            sys: System::new_all(),
+            // Empty system: no process table, so shell detection deterministically
+            // finds nothing and the shell tests exercise the `$SHELL` fallback.
+            sys: System::new(),
             os_info: os_info::get(),
             hostname: "testhost".to_string(),
             username: "testuser".to_string(),
@@ -278,6 +280,13 @@ mod env_sources_test {
     fn shell_from_env() {
         let fields = f(&super::shell::Shell, &[("SHELL", "/bin/sh")]).unwrap();
         assert_eq!(fields.get("name").map(String::as_str), Some("sh"));
+    }
+
+    #[test]
+    fn shell_unknown_keeps_name_without_version() {
+        let fields = f(&super::shell::Shell, &[("SHELL", "/usr/bin/nushell")]).unwrap();
+        assert_eq!(fields.get("name").map(String::as_str), Some("nushell"));
+        assert_eq!(fields.get("version").map(String::as_str), Some(""));
     }
 
     #[test]

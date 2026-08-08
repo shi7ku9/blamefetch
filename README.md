@@ -16,6 +16,9 @@ It never creates or modifies commits. It just prints.
 - Collects system information (OS, kernel, host, hostname, user, shell,
   terminal, window manager, uptime, CPU, GPU, memory, disk, locale) and renders
   each as a `Co-Authored-By` trailer.
+- `shell` reports the shell that actually ran blamefetch, detected from its
+  parent processes with `$SHELL` as a fallback. On Unix the name is the
+  resolved interpreter binary, so a `sh` script may report `dash` or `bash`.
 - Fully configurable through `~/.config/blamefetch/config.json`, including
   custom co-authors, plain text lines, message pools, and shell-command fields.
 - Reproducible output with `--seed` (except the `Date:` line, which is
@@ -168,7 +171,9 @@ blamefetch is display-only. It never creates, amends, pushes, or otherwise
 modifies commits or Git history. When inside a repository, it only runs
 read-only Git commands (`rev-parse`, `rev-list`, `log`).
 
-blamefetch does not execute shell commands on its own. Commands run only if you
+blamefetch's only built-in process execution is a read-only version probe: for
+the `shell` co-author it runs the detected shell's `--version` (bash, zsh, and
+fish only). No other commands run on their own. Commands run only if you
 configure them in a `sections` entry via `name`, `email`, `fields`, or a text
 section's `fields` with `{ "command": ... }`. Such commands run through your
 platform shell (`sh -c` on
