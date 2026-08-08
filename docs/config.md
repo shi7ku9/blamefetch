@@ -208,10 +208,10 @@ recursive output.
 
 ## Combining with built-in sources
 
-> Defining `sections` **replaces the default roster wholesale** — if your map
-> has one entry, that one entry is all that renders. To keep the machine
-> sections, copy them from `--print-config` into your `sections` first, or set
-> `enabled: false` on the ones you do not want instead of omitting them.
+> Sections merge into the built-in roster **per key** — a section with the same
+> name as a built-in (like `gpu` above) replaces just that one; everything else
+> keeps rendering. To hide a built-in, set `enabled: false` on it instead of
+> omitting it; to show only a few sections, list exactly those in `order`.
 
 You can also customize a built-in source instead of writing a config-only
 entry. The source still supplies its fields; only `name` and `email` are

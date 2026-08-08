@@ -192,12 +192,14 @@ impl Config {
         if !user.messages.pool.is_empty() {
             self.messages.pool = user.messages.pool;
         }
-        if !user.sections.is_empty() {
-            self.sections = user.sections;
-            // Sections are the user's now; the embedded default order no
-            // longer applies unless the user supplied their own.
-            self.order = user.order;
-        } else if let Some(order) = user.order {
+        // Per-key: a user section overrides the built-in of the same key;
+        // everything else stays. To hide a built-in, disable it with
+        // `enabled: false`; to show only a few sections, list them in `order`.
+        for (key, entry) in user.sections {
+            self.sections.insert(key, entry);
+        }
+        // An explicit user order replaces; absent keeps the derived default.
+        if let Some(order) = user.order {
             self.order = Some(order);
         }
     }
@@ -360,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn user_sections_replace_default_roster() {
+    fn user_sections_merge_into_default_roster() {
         let mut c = base();
         let user = Config {
             commit: CommitConfig::default(),
@@ -372,15 +374,54 @@ mod tests {
             order: None,
         };
         c.merge(user);
-        assert_eq!(c.sections.len(), 1);
+        assert_eq!(
+            c.sections.len(),
+            canonical_kind_order().len() + 1,
+            "adding a section must not remove the built-in roster"
+        );
         assert!(matches!(
             c.sections.get("only"),
             Some(SectionEntry::TextLine(s)) if s == "hi"
         ));
+        assert!(
+            matches!(c.sections.get("os"), Some(SectionEntry::CoAuthor(_))),
+            "built-in sections must survive the merge"
+        );
     }
 
     #[test]
-    fn user_sections_without_order_clear_default_order() {
+    fn user_section_overrides_builtin_same_key() {
+        let mut c = base();
+        let user = Config {
+            commit: CommitConfig::default(),
+            messages: MessagesConfig { pool: vec![] },
+            sections: BTreeMap::from([(
+                "os".to_string(),
+                SectionEntry::CoAuthor(CoAuthorConfig {
+                    enabled: true,
+                    name: Some(FieldValue::Value("My OS".to_string())),
+                    email: Some(FieldValue::Value("os@mine.example".to_string())),
+                    fields: BTreeMap::new(),
+                }),
+            )]),
+            order: None,
+        };
+        c.merge(user);
+        assert_eq!(c.sections.len(), canonical_kind_order().len());
+        match c.sections.get("os") {
+            Some(SectionEntry::CoAuthor(cfg)) => {
+                assert_eq!(cfg.name, Some(FieldValue::Value("My OS".to_string())));
+            }
+            _ => panic!("os must still be a CoAuthor"),
+        }
+        assert!(
+            matches!(c.sections.get("kernel"), Some(SectionEntry::CoAuthor(_))),
+            "unrelated built-in must stay untouched"
+        );
+    }
+
+    #[test]
+    fn user_sections_without_order_keep_derived_order() {
         let mut c = base();
         let user = Config {
             commit: CommitConfig::default(),
@@ -399,10 +440,11 @@ mod tests {
         c.merge(user);
         let listed = c.ordered_sections();
         let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
+        let mut expected = canonical_kind_order();
+        expected.push("bot");
         assert_eq!(
-            keys,
-            ["bot"],
-            "default order must not filter out user-defined sections"
+            keys, expected,
+            "derived order must render built-ins first, then custom keys"
         );
     }
 

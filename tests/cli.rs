@@ -484,8 +484,12 @@ fn failing_command_without_fallback_skips_trailer() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        !stdout.contains("Co-Authored-By:"),
-        "a failed command without fallback must suppress the trailer:\n{stdout}"
+        !stdout.contains("Bots"),
+        "a failed command without fallback must suppress its trailer:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Co-Authored-By:"),
+        "other sections (the built-in roster) must still render:\n{stdout}"
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("blamefetch: warning:"), "stderr: {stderr}");
