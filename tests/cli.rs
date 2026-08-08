@@ -561,6 +561,11 @@ fn hanging_section_is_skipped_after_timeout() {
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("did not finish"), "stderr: {stderr}");
+    // The command was cancelled, not failed: no second, misleading warning.
+    assert!(
+        !stderr.contains("command failed"),
+        "cancelled command must not warn as a failure:\n{stderr}"
+    );
     // The timed-out command must not outlive the run as an orphan.
     wait_for_no_process("^sleep 301$");
 }

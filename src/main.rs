@@ -115,7 +115,17 @@ fn resolve_body(
                 }
             }
             Err(RecvTimeoutError::Timeout) => {} // loop re-drains expired
-            Err(RecvTimeoutError::Disconnected) => pending.clear(),
+            Err(RecvTimeoutError::Disconnected) => {
+                // Every remaining worker exited without sending a result
+                // (typically a panic). Do not clear them silently.
+                for idx in pending.keys().copied() {
+                    let (key, _) = &sections[idx];
+                    eprintln!(
+                        "blamefetch: warning: section {key:?} exited without a result; skipping"
+                    );
+                }
+                pending.clear();
+            }
         }
     }
 

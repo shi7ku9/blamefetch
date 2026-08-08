@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 /// Child processes still running, keyed by PID. Registered while a command is
@@ -7,13 +9,42 @@ use std::sync::{LazyLock, Mutex};
 static RUNNING_CHILDREN: LazyLock<Mutex<HashSet<u32>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// Set once the run has given up on timed-out sections. A worker that starts
+/// after this point must not spawn anything: its section was already reported
+/// as skipped, so a late spawn would only create an orphan.
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// Spawns a child and registers it under the same lock as the kill scan, so
+/// no command can appear after `kill_running_children` has looked. On Unix the
+/// child gets its own process group, letting the kill cover `sh -c` pipelines
+/// instead of only the direct child.
+fn spawn_tracked(program: &str, args: &[&str]) -> Option<Child> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut guard = RUNNING_CHILDREN.lock().unwrap();
+    if CANCELLED.load(Ordering::Acquire) {
+        return None;
+    }
+    let child = command.spawn().ok()?;
+    guard.insert(child.id());
+    drop(guard);
+    Some(child)
+}
+
 /// Waits for a spawned child, keeping it registered while it runs. Returns
 /// trimmed stdout, or `None` on spawn failure / non-zero exit / non-UTF-8
 /// output. Empty output is NOT filtered here — callers decide (fail-closed
 /// treats empty as failure).
-fn run_output(child: std::process::Child) -> Option<String> {
+fn run_output(child: Child) -> Option<String> {
     let pid = child.id();
-    RUNNING_CHILDREN.lock().unwrap().insert(pid);
     let out = child.wait_with_output().ok();
     RUNNING_CHILDREN.lock().unwrap().remove(&pid);
     out.filter(|o| o.status.success())
@@ -22,13 +53,7 @@ fn run_output(child: std::process::Child) -> Option<String> {
 }
 
 pub fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    let child = std::process::Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
-    run_output(child)
+    run_output(spawn_tracked(program, args)?)
 }
 
 /// Run a user-supplied command through the platform shell so pipes/globs work.
@@ -41,28 +66,38 @@ pub fn sh_output(command: &str) -> Option<String> {
     } else {
         ("sh", "-c")
     };
-    let child = std::process::Command::new(program)
-        .arg(flag)
-        .arg(command)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .ok()?;
-    run_output(child)
+    run_output(spawn_tracked(program, &[flag, command])?)
+}
+
+/// True once the run has given up on timed-out sections. Callers use it to
+/// distinguish "the command was cancelled" from "the command failed", so a
+/// cancelled command does not produce a second, misleading warning.
+pub fn is_cancelled() -> bool {
+    CANCELLED.load(Ordering::Acquire)
 }
 
 /// Kills every command still running. Call after section resolution: anything
 /// still registered belongs to a section that timed out, and without this the
-/// child would outlive us as an orphan. Kills the direct child PID — for
-/// `sh -c` with a single command the shell has exec'd, so the child IS the
-/// program; grandchildren of compound pipelines are a documented residual.
-/// Signals, not privileges: this is cleanup, not a security boundary.
+/// child would outlive us as an orphan. Kills the whole process group, so
+/// compound `sh -c` pipelines are covered too. Signals, not privileges: this
+/// is cleanup, not a security boundary.
+///
+/// Tradeoff: children run in their own process group, so a terminal Ctrl-C
+/// (SIGINT to the foreground group) no longer reaches them — interrupting
+/// blamefetch while a command runs leaves that command running. Cleaning up on
+/// SIGINT would need a signal handler; accepted in exchange for pipeline
+/// coverage.
 #[cfg(unix)]
 pub fn kill_running_children() {
     let children = RUNNING_CHILDREN.lock().unwrap();
+    CANCELLED.store(true, Ordering::Release);
     for &pid in children.iter() {
-        // SAFETY: kill(2) on the PID of our own spawned child.
+        // Kill the process group first (covers `sh -c` pipelines); the direct
+        // PID afterwards is redundant insurance — the leader is in its own
+        // group — but harmless if the group is already gone.
+        // SAFETY: kill(2) on the PID/process group of our own spawned child.
         unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
             libc::kill(pid as libc::pid_t, libc::SIGKILL);
         }
     }
@@ -70,8 +105,10 @@ pub fn kill_running_children() {
 
 #[cfg(not(unix))]
 pub fn kill_running_children() {
-    // No portable kill-by-PID from std on Windows; the orphan window stays a
-    // documented residual there.
+    // No portable kill-by-PID from std on Windows; mark the run cancelled so
+    // workers that start after the timeout do not spawn new children. The
+    // orphan window for already-running children stays a documented residual.
+    CANCELLED.store(true, Ordering::Release);
 }
 
 pub fn format_bytes(bytes: u64) -> String {

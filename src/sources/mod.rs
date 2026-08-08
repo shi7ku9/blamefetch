@@ -190,9 +190,13 @@ fn resolve_command(fv: &FieldValue, cache: &CommandCache) -> Option<String> {
             None => match fallback {
                 Some(f) => Some(collapse_whitespace(f)),
                 None => {
-                    eprintln!(
-                        "blamefetch: warning: command failed and no fallback: {command:?}; skipping section"
-                    );
+                    // A command killed by the section timeout is not a config
+                    // failure; the timeout warning already covers it.
+                    if !crate::util::is_cancelled() {
+                        eprintln!(
+                            "blamefetch: warning: command failed and no fallback: {command:?}; skipping section"
+                        );
+                    }
                     None
                 }
             },
