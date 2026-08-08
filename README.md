@@ -24,6 +24,9 @@ It never creates or modifies commits. It just prints.
 - Reproducible output with `--seed` (except the `Date:` line, which is
   relative to the current time).
 - Optional colored output with `--color`.
+- Sections resolve concurrently, each with a per-section timeout (default
+  5 s, overridable via `BLAMEFETCH_SECTION_TIMEOUT_MS`); a section that hangs
+  is skipped with a warning instead of stalling the whole run.
 
 ## Requirements
 
@@ -72,7 +75,7 @@ Outside a repository, or with `--no-git`, random commit data is generated.
 | `--no-git` | Skip reading the current Git repo; use pure random data. |
 | `--hash <HASH>` | Force the commit hash. |
 | `--message <MESSAGE>` | Force the commit message. |
-| `--author <NAME>` | Force the author name. |
+| `--author <AUTHOR>` | Force the author name. |
 | `--email <EMAIL>` | Force the author email. |
 | `--color` | Colorize the output. |
 | `--seed <SEED>` | Seed the RNG for reproducible output. |
@@ -171,12 +174,13 @@ blamefetch is display-only. It never creates, amends, pushes, or otherwise
 modifies commits or Git history. When inside a repository, it only runs
 read-only Git commands (`rev-parse`, `rev-list`, `log`).
 
-blamefetch's only built-in process execution is a read-only version probe: for
-the `shell` co-author it runs the detected shell's `--version` (bash, zsh, and
-fish only). No other commands run on their own. Commands run only if you
-configure them in a `sections` entry via `name`, `email`, `fields`, or a text
-section's `fields` with `{ "command": ... }`. Such commands run through your
-platform shell (`sh -c` on
+blamefetch's only built-in process execution is a set of read-only probes:
+`uname -r` for the `kernel` co-author, `lspci -nn` for the `gpu` co-author,
+and the detected shell's `--version` for the `shell` co-author (bash, zsh,
+fish, nu, elvish, xonsh, and pwsh). No other commands run on their own.
+Commands run only if you configure them in a `sections` entry via `name`,
+`email`, `fields`, or a text section's `fields` with `{ "command": ... }`.
+Such commands run through your platform shell (`sh -c` on
 Unix, `cmd /C` on Windows) with the same permissions as the user who started
 blamefetch, without a sandbox.
 
