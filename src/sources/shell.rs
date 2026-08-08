@@ -90,13 +90,13 @@ fn is_known_shell_name(name: &str) -> bool {
 }
 
 /// Walks the parent-process chain starting at `own_pid` and returns the
-/// executable path of the nearest ancestor whose basename is a known shell.
+/// program path of the nearest ancestor whose basename is a known shell.
 /// Returns `None` when no ancestor matches, the chain ends, a cycle is
 /// detected, or the depth limit is hit.
 fn find_shell_in_chain(
     own_pid: u32,
     parent_of: impl Fn(u32) -> Option<u32>,
-    exe_of: impl Fn(u32) -> Option<String>,
+    program_paths_of: impl Fn(u32) -> Vec<String>,
 ) -> Option<String> {
     let mut visited = HashSet::new();
     let mut pid = own_pid;
@@ -104,7 +104,7 @@ fn find_shell_in_chain(
         if pid == 0 || !visited.insert(pid) {
             return None; // end of chain or cycle
         }
-        if let Some(path) = exe_of(pid) {
+        for path in program_paths_of(pid) {
             let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
             if is_known_shell_name(name) {
                 return Some(path); // full path, so callers can exec `--version`
@@ -115,19 +115,32 @@ fn find_shell_in_chain(
     None
 }
 
-/// Best-effort executable path of a process: `exe` first, falling back to the
-/// first element of `cmd` (cmdline stays readable where the exe link is not,
-/// e.g. under `hidepid`). Empty values are treated as absent.
-fn process_exe_path(exe: Option<&Path>, cmd: &[OsString]) -> Option<String> {
-    exe.map(|p| p.to_string_lossy().into_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| cmd.first().map(|c| c.to_string_lossy().into_owned()))
-        .filter(|s| !s.is_empty())
+/// Program-path candidates of a process, most trustworthy first: the real
+/// executable, then the first two command-line words. The shell name is not
+/// always visible in `exe` — nixpkgs wraps pwsh as `.pwsh-wrapped`, and
+/// shebang shells like xonsh run as `python3 /usr/bin/xonsh` — but the
+/// command line still carries it. `cmd[0]` alone also covers `hidepid`, where
+/// the exe link is unreadable but the command line is not. Empty values are
+/// dropped. The caller only ever *executes* a returned path when it contains
+/// a separator, and only when its basename is a known shell, so a crafted
+/// argv[0] cannot reach the version probe.
+fn process_shell_candidates(exe: Option<&Path>, cmd: &[OsString]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(exe) = exe.filter(|p| !p.as_os_str().is_empty()) {
+        out.push(exe.to_string_lossy().into_owned());
+    }
+    for arg in cmd.iter().take(2) {
+        let s = arg.to_string_lossy().into_owned();
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
 }
 
 /// Detects the shell running this process from the process-table snapshot in
 /// `sys`: walks the parent chain of our own PID and returns the nearest known
-/// shell's executable path. `None` means "could not detect".
+/// shell's program path. `None` means "could not detect".
 fn detect_running_shell(sys: &System) -> Option<String> {
     let processes = sys.processes();
     let parent_of = |pid: u32| {
@@ -136,12 +149,13 @@ fn detect_running_shell(sys: &System) -> Option<String> {
             .and_then(|p| p.parent())
             .map(|p| p.as_u32())
     };
-    let exe_of = |pid: u32| {
+    let program_paths_of = |pid: u32| {
         processes
             .get(&Pid::from_u32(pid))
-            .and_then(|p| process_exe_path(p.exe(), p.cmd()))
+            .map(|p| process_shell_candidates(p.exe(), p.cmd()))
+            .unwrap_or_default()
     };
-    find_shell_in_chain(std::process::id(), parent_of, exe_of)
+    find_shell_in_chain(std::process::id(), parent_of, program_paths_of)
 }
 
 /// How a shell's version is read. The extension point: future shells may use
@@ -212,23 +226,57 @@ mod tests {
 
     use super::{
         detect_running_shell, find_shell_in_chain, is_known_shell_name, parse_shell_version,
-        process_exe_path, shell_version, version_strategy,
+        process_shell_candidates, shell_version, version_strategy,
     };
 
     /// Walks a fabricated chain of `(pid, parent, exe)` rows with the pure
     /// `find_shell_in_chain` function.
-    fn walk(own_pid: u32, procs: &[(u32, Option<u32>, Option<&str>)]) -> Option<String> {
-        let by_pid: HashMap<u32, (Option<u32>, Option<&str>)> = procs
+    /// One fabricated process row: `(pid, parent, exe, cmd)`.
+    type ProcRow = (
+        u32,
+        Option<u32>,
+        Option<&'static str>,
+        &'static [&'static str],
+    );
+
+    fn walk(own_pid: u32, procs: &[(u32, Option<u32>, Option<&'static str>)]) -> Option<String> {
+        walk_cmd(
+            own_pid,
+            &procs
+                .iter()
+                .map(|(p, par, exe)| (*p, *par, *exe, &[][..]))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Walks a fabricated chain of [`ProcRow`]s.
+    fn walk_cmd(own_pid: u32, procs: &[ProcRow]) -> Option<String> {
+        /// `(parent, exe, cmd)` lookup row.
+        type LookupRow = (Option<u32>, Option<&'static str>, Vec<String>);
+        let by_pid: HashMap<u32, LookupRow> = procs
             .iter()
-            .map(|(p, par, exe)| (*p, (*par, *exe)))
+            .map(|(p, par, exe, cmd)| {
+                (
+                    *p,
+                    (*par, *exe, cmd.iter().map(|s| s.to_string()).collect()),
+                )
+            })
             .collect();
         find_shell_in_chain(
             own_pid,
-            |pid| by_pid.get(&pid).and_then(|(par, _)| *par),
+            |pid| by_pid.get(&pid).and_then(|(par, _, _)| *par),
             |pid| {
                 by_pid
                     .get(&pid)
-                    .and_then(|(_, exe)| exe.map(str::to_string))
+                    .map(|(_, exe, cmd)| {
+                        let mut candidates = Vec::new();
+                        if let Some(exe) = exe {
+                            candidates.push(exe.to_string());
+                        }
+                        candidates.extend(cmd.iter().cloned());
+                        candidates
+                    })
+                    .unwrap_or_default()
             },
         )
     }
@@ -318,6 +366,52 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_shell_recognized_via_cmd0() {
+        // nixpkgs wraps pwsh as `.pwsh-wrapped`; the shell name only survives
+        // in the command line (cmd[0]).
+        let procs = [
+            (
+                100,
+                Some(99),
+                Some("/nix/store/pwsh/share/powershell/.pwsh-wrapped"),
+                &["/nix/store/pwsh/bin/pwsh"][..],
+            ),
+            (99, None, Some("/usr/bin/zsh"), &["zsh"][..]),
+        ];
+        assert_eq!(
+            walk_cmd(100, &procs),
+            Some("/nix/store/pwsh/bin/pwsh".to_string())
+        );
+    }
+
+    #[test]
+    fn shebang_shell_recognized_via_cmd1() {
+        // xonsh runs as `python3 /usr/bin/xonsh`: exe is the interpreter, the
+        // shell script path sits at cmd[1].
+        let procs = [
+            (
+                100,
+                Some(99),
+                Some("/usr/bin/python3"),
+                &["python3", "/usr/bin/xonsh"][..],
+            ),
+            (99, None, Some("/usr/bin/zsh"), &["zsh"][..]),
+        ];
+        assert_eq!(walk_cmd(100, &procs), Some("/usr/bin/xonsh".to_string()));
+    }
+
+    #[test]
+    fn exe_wins_over_cmd_candidates() {
+        // When exe itself is a known shell, the real path wins over a crafted
+        // argv[0].
+        let procs = [
+            (100, Some(99), Some("/usr/bin/zsh"), &["/weird/argv0"][..]),
+            (99, None, Some("/usr/bin/bash"), &["bash"][..]),
+        ];
+        assert_eq!(walk_cmd(100, &procs), Some("/usr/bin/zsh".to_string()));
+    }
+
+    #[test]
     fn known_shell_name_matching() {
         for name in [
             "zsh", "bash", "rbash", "yash", "dash", "-zsh", "-bash", "cmd.exe", "pwsh.exe",
@@ -331,20 +425,37 @@ mod tests {
     }
 
     #[test]
-    fn process_exe_path_fallback() {
+    fn process_shell_candidates_prefers_exe_then_cmd() {
+        // The bare cmd name is kept as a second candidate (not a duplicate of
+        // the full path); it only matters when exe is not a known shell.
         assert_eq!(
-            process_exe_path(None, &[OsString::from("zsh"), OsString::from("-c")]),
-            Some("zsh".to_string())
+            process_shell_candidates(Some(Path::new("/usr/bin/zsh")), &[OsString::from("zsh")]),
+            vec!["/usr/bin/zsh".to_string(), "zsh".to_string()]
         );
+        // Empty exe falls through to the command line.
         assert_eq!(
-            process_exe_path(Some(Path::new("/usr/bin/zsh")), &[OsString::from("zsh")]),
-            Some("/usr/bin/zsh".to_string())
+            process_shell_candidates(Some(Path::new("")), &[OsString::from("zsh")]),
+            vec!["zsh".to_string()]
         );
-        assert_eq!(process_exe_path(None, &[]), None);
-        // Empty exe falls through to cmd[0].
+        assert_eq!(process_shell_candidates(None, &[]), Vec::<String>::new());
+        // Wrapped binaries keep the shell name in cmd[0].
         assert_eq!(
-            process_exe_path(Some(Path::new("")), &[OsString::from("zsh")]),
-            Some("zsh".to_string())
+            process_shell_candidates(
+                Some(Path::new("/nix/store/x/share/powershell/.pwsh-wrapped")),
+                &[OsString::from("/nix/store/x/bin/pwsh")]
+            ),
+            vec![
+                "/nix/store/x/share/powershell/.pwsh-wrapped".to_string(),
+                "/nix/store/x/bin/pwsh".to_string()
+            ]
+        );
+        // Exact duplicates between exe and cmd are dropped.
+        assert_eq!(
+            process_shell_candidates(
+                Some(Path::new("/usr/bin/zsh")),
+                &[OsString::from("/usr/bin/zsh"), OsString::from("-l")]
+            ),
+            vec!["/usr/bin/zsh".to_string(), "-l".to_string()]
         );
     }
 
