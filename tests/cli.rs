@@ -495,6 +495,98 @@ fn failing_command_without_fallback_skips_trailer() {
     assert!(stderr.contains("blamefetch: warning:"), "stderr: {stderr}");
 }
 
+#[cfg(unix)]
+#[test]
+fn hanging_section_is_skipped_after_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{
+    "sections": {
+        "slow": {
+            "name": "Slow {v}",
+            "email": "slow@x.com",
+            "fields": { "v": { "command": "sleep 30" } }
+        },
+        "fast": { "name": "Fast", "email": "fast@x.com" }
+    }
+}"#,
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    let out = bin()
+        .arg("--no-git")
+        .arg("--config")
+        .arg(&cfg_path)
+        .env("BLAMEFETCH_SECTION_TIMEOUT_MS", "300")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert!(out.status.success(), "a hung section must not fail the run");
+    assert!(
+        elapsed.as_secs() < 10,
+        "run must not wait for the hung command (took {elapsed:?})"
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("Co-Authored-By: Fast"),
+        "fast section must still render:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Slow"),
+        "hung section must be skipped:\n{stdout}"
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("did not finish"), "stderr: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn all_sections_hanging_still_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{
+    "sections": {
+        "slow": {
+            "name": "Slow {v}",
+            "email": "slow@x.com",
+            "fields": { "v": { "command": "sleep 30" } }
+        }
+    }
+}"#,
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    let out = bin()
+        .arg("--no-git")
+        .arg("--config")
+        .arg(&cfg_path)
+        .env("BLAMEFETCH_SECTION_TIMEOUT_MS", "300")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        out.status.success(),
+        "the run must exit successfully even when a section hangs"
+    );
+    assert!(
+        elapsed.as_secs() < 10,
+        "the run must still exit promptly (took {elapsed:?})"
+    );
+    // The orphaned `sleep 30` child lingers up to 30 s — harmless, and the
+    // process itself has already exited.
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        !stdout.contains("Slow"),
+        "hung section must be skipped:\n{stdout}"
+    );
+}
+
 #[test]
 fn utf8_config_renders_chinese_and_japanese() {
     let dir = tempfile::tempdir().unwrap();

@@ -6,13 +6,125 @@ mod sources;
 mod template;
 mod util;
 
+use std::collections::HashMap;
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
+
 use clap::Parser;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use std::process::ExitCode;
 
 use cli::Cli;
+use render::BodyItem;
 use sources::SourceContext;
+
+/// Default budget per section before it is skipped; overridable via the
+/// `BLAMEFETCH_SECTION_TIMEOUT_MS` environment variable.
+const DEFAULT_SECTION_TIMEOUT_MS: u64 = 5000;
+
+fn section_timeout_ms(raw: Option<&str>) -> u64 {
+    match raw.and_then(|s| s.parse::<u64>().ok()) {
+        Some(v) if v > 0 => v,
+        _ => DEFAULT_SECTION_TIMEOUT_MS,
+    }
+}
+
+/// Resolves all sections concurrently — one detached thread per TextField /
+/// CoAuthor section — and returns the body items in `sections` order. A
+/// section that does not finish within `timeout` is skipped with a warning.
+/// Workers are deliberately never joined: a thread stuck in a blocking
+/// syscall (e.g. statfs on a hung NFS mount) must not hold up the run —
+/// process exit reaps it, and a late worker's send is dropped with the
+/// receiver.
+fn resolve_body(
+    sections: &[(String, &config::SectionEntry)],
+    ctx: &Arc<SourceContext>,
+    cache: &Arc<sources::CommandCache>,
+    timeout: Duration,
+) -> Vec<BodyItem> {
+    let (tx, rx) = mpsc::channel::<(usize, Option<BodyItem>)>();
+    let mut results: HashMap<usize, BodyItem> = HashMap::new();
+    let mut pending: HashMap<usize, Instant> = HashMap::new();
+
+    for (idx, (key, entry)) in sections.iter().enumerate() {
+        match entry {
+            config::SectionEntry::TextLine(line) => {
+                // Instant; no thread needed.
+                results.insert(idx, BodyItem::Text(line.clone()));
+            }
+            _ => {
+                let tx = tx.clone();
+                let ctx = Arc::clone(ctx);
+                let cache = Arc::clone(cache);
+                let key = key.clone();
+                // `entry` is a `&&SectionEntry` here; `.clone()` would copy the
+                // reference (`Clone for &T` wins the probe), so deref first.
+                let entry = (*entry).clone();
+                thread::spawn(move || {
+                    let item = match &entry {
+                        config::SectionEntry::TextField(tf) => {
+                            sources::render_text(tf, cache.as_ref()).map(BodyItem::Text)
+                        }
+                        config::SectionEntry::CoAuthor(cfg) => {
+                            sources::render_co_author(cfg, &key, ctx.as_ref(), cache.as_ref())
+                                .map(BodyItem::Trailer)
+                        }
+                        config::SectionEntry::TextLine(_) => unreachable!(),
+                    };
+                    let _ = tx.send((idx, item)); // ignored once main gave up
+                });
+                pending.insert(idx, Instant::now() + timeout);
+            }
+        }
+    }
+    drop(tx); // main holds no sender; Disconnected means all workers exited
+
+    while !pending.is_empty() {
+        let now = Instant::now();
+        // Give up on expired sections first.
+        let expired: Vec<usize> = pending
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(idx, _)| *idx)
+            .collect();
+        for idx in expired {
+            let (key, _) = &sections[idx];
+            eprintln!(
+                "blamefetch: warning: section {key:?} did not finish within {} ms; skipping",
+                timeout.as_millis()
+            );
+            pending.remove(&idx);
+        }
+        if pending.is_empty() {
+            break;
+        }
+        let wait = pending
+            .values()
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .min()
+            .unwrap();
+        match rx.recv_timeout(wait) {
+            Ok((idx, item)) => {
+                if pending.remove(&idx).is_some()
+                    && let Some(item) = item
+                {
+                    results.insert(idx, item);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {} // loop re-drains expired
+            Err(RecvTimeoutError::Disconnected) => pending.clear(),
+        }
+    }
+
+    sections
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, _)| results.remove(&idx))
+        .collect()
+}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -73,28 +185,51 @@ fn main() -> ExitCode {
         date: git.date,
     };
 
-    let ctx = SourceContext::new();
-    let mut cache = sources::CommandCache::new();
-    let mut body_items = Vec::new();
-    for (key, entry) in config.ordered_sections() {
-        match entry {
-            config::SectionEntry::TextLine(line) => {
-                body_items.push(render::BodyItem::Text(line.clone()));
-            }
-            config::SectionEntry::TextField(tf) => {
-                if let Some(text) = sources::render_text(tf, &mut cache) {
-                    body_items.push(render::BodyItem::Text(text));
-                }
-            }
-            config::SectionEntry::CoAuthor(cfg) => {
-                if let Some(co_author) = sources::render_co_author(cfg, &key, &ctx, &mut cache) {
-                    body_items.push(render::BodyItem::Trailer(co_author));
-                }
-            }
-        }
-    }
+    let timeout = Duration::from_millis(section_timeout_ms(
+        std::env::var("BLAMEFETCH_SECTION_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    ));
+    let ctx = Arc::new(SourceContext::new());
+    let cache = Arc::new(sources::CommandCache::new());
+    let sections: Vec<(String, &config::SectionEntry)> = config.ordered_sections();
+    let body_items = resolve_body(&sections, &ctx, &cache, timeout);
 
     let opts = render::RenderOptions { color: cli.color };
     print!("{}", render::render_commit(&git_data, &body_items, &opts));
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn shared_state_is_send_sync() {
+        // The parallel resolver shares these across threads; sysinfo does not
+        // promise Send+Sync on System, so pin the property here.
+        assert_send_sync::<SourceContext>();
+        assert_send_sync::<sources::CommandCache>();
+        assert_send_sync::<BodyItem>();
+    }
+
+    #[test]
+    fn section_timeout_default_when_unset() {
+        assert_eq!(section_timeout_ms(None), DEFAULT_SECTION_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn section_timeout_parses() {
+        assert_eq!(section_timeout_ms(Some("300")), 300);
+        assert_eq!(section_timeout_ms(Some("10000")), 10_000);
+    }
+
+    #[test]
+    fn section_timeout_invalid_or_zero_falls_back() {
+        assert_eq!(section_timeout_ms(Some("abc")), DEFAULT_SECTION_TIMEOUT_MS);
+        assert_eq!(section_timeout_ms(Some("0")), DEFAULT_SECTION_TIMEOUT_MS);
+        assert_eq!(section_timeout_ms(Some("-5")), DEFAULT_SECTION_TIMEOUT_MS);
+    }
 }

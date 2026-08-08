@@ -14,6 +14,7 @@ pub mod user;
 pub mod wm;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use sysinfo::System;
 
@@ -80,16 +81,14 @@ pub fn all_sources() -> Vec<&'static dyn Source> {
     ]
 }
 
-enum Cached {
-    Ok(String),
-    Failed,
-}
-
 /// Runs a user command at most once per `blamefetch` invocation, keyed by the
-/// raw command string. Empty/trimmed output and any failure resolve to `None`.
+/// raw command string. Thread-safe: the map lock is held only for the lookup
+/// and insertion (microseconds), so distinct commands execute concurrently;
+/// identical commands dedupe through the shared `OnceLock`. Empty/trimmed
+/// output and any failure resolve to `None`.
 #[derive(Default)]
 pub struct CommandCache {
-    results: HashMap<String, Cached>,
+    results: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
 }
 
 impl CommandCache {
@@ -97,20 +96,16 @@ impl CommandCache {
         Self::default()
     }
 
-    pub fn resolve(&mut self, command: &str) -> Option<String> {
-        if let Some(cached) = self.results.get(command) {
-            return match cached {
-                Cached::Ok(v) => Some(v.clone()),
-                Cached::Failed => None,
-            };
-        }
-        let out = sh_output(command).filter(|s| !s.is_empty());
-        let entry = match &out {
-            Some(v) => Cached::Ok(v.clone()),
-            None => Cached::Failed,
-        };
-        self.results.insert(command.to_string(), entry);
-        out
+    pub fn resolve(&self, command: &str) -> Option<String> {
+        let slot = self
+            .results
+            .lock()
+            .unwrap()
+            .entry(command.to_string())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone();
+        slot.get_or_init(|| sh_output(command).filter(|s| !s.is_empty()))
+            .clone()
     }
 }
 
@@ -121,7 +116,7 @@ pub fn render_co_author(
     cfg: &CoAuthorConfig,
     kind: &str,
     ctx: &SourceContext,
-    cache: &mut CommandCache,
+    cache: &CommandCache,
 ) -> Option<CoAuthor> {
     if !cfg.enabled {
         return None;
@@ -175,7 +170,7 @@ pub fn render_co_author(
 
 /// Resolves a text section: fills `{placeholder}` templates from its `fields`
 /// (same command resolution and fail-closed rules as co-author fields).
-pub fn render_text(tf: &TextField, cache: &mut CommandCache) -> Option<String> {
+pub fn render_text(tf: &TextField, cache: &CommandCache) -> Option<String> {
     let mut fields: HashMap<String, String> = HashMap::new();
     for (key, fv) in &tf.fields {
         let value = match fv {
@@ -187,7 +182,7 @@ pub fn render_text(tf: &TextField, cache: &mut CommandCache) -> Option<String> {
     Some(render(&tf.text, &fields))
 }
 
-fn resolve_command(fv: &FieldValue, cache: &mut CommandCache) -> Option<String> {
+fn resolve_command(fv: &FieldValue, cache: &CommandCache) -> Option<String> {
     match fv {
         FieldValue::Value(_) => None,
         FieldValue::Command { command, fallback } => match cache.resolve(command) {
@@ -418,8 +413,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             BTreeMap::new(),
         );
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
         assert_eq!(ca.name, "Bot");
         assert_eq!(ca.email, "bot@x.com");
     }
@@ -431,8 +426,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             BTreeMap::new(),
         );
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "bot", &ctx(), &cache).is_none());
     }
 
     #[cfg(unix)]
@@ -451,8 +446,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
         assert_eq!(ca.name, "Bot 5.0");
     }
 
@@ -472,8 +467,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
         assert_eq!(ca.name, "Bot unknown");
     }
 
@@ -493,8 +488,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "bot", &ctx(), &cache).is_none());
     }
 
     #[cfg(unix)]
@@ -513,8 +508,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "bot", &ctx(), &cache).is_none());
     }
 
     #[cfg(unix)]
@@ -533,8 +528,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "bot", &ctx(), &cache).is_none());
     }
 
     #[test]
@@ -553,10 +548,10 @@ mod co_author_test {
             email: Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         };
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "bot", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "bot", &ctx(), &cache).is_none());
         assert!(
-            cache.results.is_empty(),
+            cache.results.lock().unwrap().is_empty(),
             "disabled entries must not resolve commands"
         );
     }
@@ -588,8 +583,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             fields,
         );
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
         assert_eq!(ca.name, "xx");
         let count = std::fs::read_to_string(&marker)
             .map(|s| s.len())
@@ -612,8 +607,8 @@ mod co_author_test {
             Some(FieldValue::Value("bot@x.com".to_string())),
             BTreeMap::new(),
         );
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "bot", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
         assert_eq!(
             ca.name, "Bot {version}",
             "command output is not re-templated"
@@ -623,15 +618,15 @@ mod co_author_test {
     #[test]
     fn unknown_kind_without_name_or_email_skips() {
         let cfg = entry(None, None, BTreeMap::new());
-        let mut cache = CommandCache::new();
-        assert!(render_co_author(&cfg, "nope", &ctx(), &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_co_author(&cfg, "nope", &ctx(), &cache).is_none());
     }
 
     #[test]
     fn kind_entry_uses_source_defaults() {
         let cfg = entry(None, None, BTreeMap::new());
-        let mut cache = CommandCache::new();
-        let ca = render_co_author(&cfg, "os", &ctx(), &mut cache).unwrap();
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "os", &ctx(), &cache).unwrap();
         assert!(!ca.name.is_empty());
         assert!(!ca.email.is_empty());
     }
@@ -651,9 +646,9 @@ mod co_author_test {
             text: "Generated by Bot {version}".to_string(),
             fields,
         };
-        let mut cache = CommandCache::new();
+        let cache = CommandCache::new();
         assert_eq!(
-            render_text(&tf, &mut cache).as_deref(),
+            render_text(&tf, &cache).as_deref(),
             Some("Generated by Bot 5.0")
         );
     }
@@ -673,8 +668,8 @@ mod co_author_test {
             text: "v{version}".to_string(),
             fields,
         };
-        let mut cache = CommandCache::new();
-        assert!(render_text(&tf, &mut cache).is_none());
+        let cache = CommandCache::new();
+        assert!(render_text(&tf, &cache).is_none());
     }
 
     #[test]
@@ -683,7 +678,7 @@ mod co_author_test {
             text: "hello world".to_string(),
             fields: BTreeMap::new(),
         };
-        let mut cache = CommandCache::new();
-        assert_eq!(render_text(&tf, &mut cache).as_deref(), Some("hello world"));
+        let cache = CommandCache::new();
+        assert_eq!(render_text(&tf, &cache).as_deref(), Some("hello world"));
     }
 }
