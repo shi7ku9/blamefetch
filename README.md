@@ -68,12 +68,14 @@ Run `blamefetch` inside a Git repository to use a real commit:
 blamefetch
 ```
 
-Outside a repository, or with `--no-git`, random commit data is generated.
+Outside a repository, or with `--no-git`, random commit data is generated;
+`--commit` instead requires being inside a repository and errors outside one.
 
 | Flag | Description |
 | --- | --- |
 | `--no-git` | Skip reading the current Git repo; use pure random data. |
 | `--hash <HASH>` | Force the commit hash. |
+| `--commit <PREFIX>` | Select a commit whose hash starts with `PREFIX` (case-insensitive); errors when zero or multiple commits match. Conflicts with `--no-git` and `--hash`. |
 | `--message <MESSAGE>` | Force the commit message. |
 | `--author <AUTHOR>` | Force the author name. |
 | `--email <EMAIL>` | Force the author email. |

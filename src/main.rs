@@ -32,6 +32,21 @@ fn section_timeout_ms(raw: Option<&str>) -> u64 {
     }
 }
 
+/// First 20 candidate hashes, each indented, plus a truncation note when the
+/// list is longer — a short prefix can match thousands of commits.
+fn candidate_lines(hashes: &[String]) -> Vec<String> {
+    const MAX_LISTED: usize = 20;
+    let mut lines: Vec<String> = hashes
+        .iter()
+        .take(MAX_LISTED)
+        .map(|hash| format!("  {hash}"))
+        .collect();
+    if hashes.len() > MAX_LISTED {
+        lines.push(format!("  … and {} more", hashes.len() - MAX_LISTED));
+    }
+    lines
+}
+
 /// Resolves all sections concurrently — one detached thread per TextField /
 /// CoAuthor section — and returns the body items in `sections` order. A
 /// section that does not finish within `timeout` is skipped with a warning.
@@ -157,7 +172,37 @@ fn main() -> ExitCode {
         None => rand::make_rng(),
     };
 
-    let (git, source_note) = if cli.no_git {
+    let (git, source_note) = if let Some(prefix) = cli.commit.as_deref() {
+        if !git::is_in_repo(&git::RealGit) {
+            eprintln!("blamefetch: error: --commit requires being inside a Git repository");
+            return ExitCode::FAILURE;
+        }
+        match git::commit_by_prefix(&git::RealGit, prefix) {
+            Ok(data) => (data, None),
+            Err(git::CommitError::Multiple(hashes)) => {
+                eprintln!(
+                    "blamefetch: error: --commit '{prefix}' matches {} commits:",
+                    hashes.len()
+                );
+                for line in candidate_lines(&hashes) {
+                    eprintln!("{line}");
+                }
+                return ExitCode::FAILURE;
+            }
+            Err(git::CommitError::NoMatch) => {
+                eprintln!(
+                    "blamefetch: error: --commit '{prefix}' does not match any commit in this repository (must be a non-empty hexadecimal hash prefix)"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(git::CommitError::ReadFailed) => {
+                eprintln!(
+                    "blamefetch: error: --commit '{prefix}' matched a commit but its data could not be read"
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    } else if cli.no_git {
         (git::GitData::random(&config, &mut rng), Some("--no-git"))
     } else {
         match git::git_data(&git::RealGit, &mut rng) {
@@ -245,5 +290,20 @@ mod tests {
         assert_eq!(section_timeout_ms(Some("abc")), DEFAULT_SECTION_TIMEOUT_MS);
         assert_eq!(section_timeout_ms(Some("0")), DEFAULT_SECTION_TIMEOUT_MS);
         assert_eq!(section_timeout_ms(Some("-5")), DEFAULT_SECTION_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn candidate_lines_lists_all_under_limit() {
+        let hashes = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(candidate_lines(&hashes), vec!["  a", "  b"]);
+    }
+
+    #[test]
+    fn candidate_lines_truncates_after_twenty() {
+        let hashes: Vec<String> = (0..25).map(|i| format!("{i:040x}")).collect();
+        let lines = candidate_lines(&hashes);
+        assert_eq!(lines.len(), 21);
+        assert!(lines[20].ends_with("and 5 more"), "{:?}", lines[20]);
+        assert_eq!(lines[19], format!("  {}", hashes[19]));
     }
 }

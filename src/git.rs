@@ -40,18 +40,66 @@ impl GitData {
     }
 }
 
+/// Why a `--commit <PREFIX>` lookup failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitError {
+    /// No commit hash in the repository starts with the prefix.
+    NoMatch,
+    /// Exactly one commit matched, but its commit data could not be read.
+    ReadFailed,
+    /// More than one commit hash starts with the prefix; the candidates are
+    /// listed for the user to disambiguate.
+    Multiple(Vec<String>),
+}
+
 pub fn git_data(shell: &dyn GitShell, rng: &mut StdRng) -> Option<GitData> {
     if !is_in_repo(shell) {
         return None;
     }
     let hash = random_commit(shell, rng)?;
+    commit_data(shell, &hash)
+}
+
+/// Loads the full commit record for one hash (git prints lowercase hex).
+/// Fail-closed: any failed probe returns `None`; an empty message is valid.
+fn commit_data(shell: &dyn GitShell, hash: &str) -> Option<GitData> {
+    let message = commit_message(shell, hash)?;
+    let author_name = commit_author_name(shell, hash)?;
+    let author_email = commit_author_email(shell, hash)?;
+    let date = commit_date(shell, hash)?;
     Some(GitData {
-        message: commit_message(shell, &hash).unwrap_or_default(),
-        author_name: commit_author_name(shell, &hash),
-        author_email: commit_author_email(shell, &hash),
-        date: commit_date(shell, &hash),
-        hash,
+        hash: hash.to_string(),
+        message,
+        author_name: Some(author_name),
+        author_email: Some(author_email),
+        date: Some(date),
     })
+}
+
+/// Finds the commit whose hash starts with `prefix` (case-insensitive) among
+/// every commit reachable from any ref (`rev-list --all`, the same universe
+/// as the random picker). Exactly one match selects that commit; zero and
+/// multiple matches are errors.
+pub fn commit_by_prefix(shell: &dyn GitShell, prefix: &str) -> Result<GitData, CommitError> {
+    let prefix = prefix.to_ascii_lowercase();
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(CommitError::NoMatch);
+    }
+    let all = shell
+        .output(&["rev-list", "--all"])
+        .ok_or(CommitError::NoMatch)?;
+    let matches: Vec<String> = all
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|hash| hash.starts_with(&prefix))
+        .collect();
+    match matches.len() {
+        0 => Err(CommitError::NoMatch),
+        1 => commit_data(shell, &matches[0]).ok_or(CommitError::ReadFailed),
+        _ => Err(CommitError::Multiple(matches)),
+    }
 }
 
 pub fn is_in_repo(shell: &dyn GitShell) -> bool {
@@ -143,7 +191,10 @@ mod tests {
 
     use crate::config::{Config, MessagesConfig};
 
-    use super::{GitData, GitShell, git_data, is_in_repo, random_hash, random_message};
+    use super::{
+        CommitError, GitData, GitShell, commit_by_prefix, git_data, is_in_repo, random_hash,
+        random_message,
+    };
 
     #[derive(Default)]
     struct FakeGit {
@@ -250,6 +301,107 @@ mod tests {
     fn git_data_none_outside_repo() {
         let g = FakeGit::default();
         assert!(git_data(&g, &mut rng()).is_none());
+    }
+
+    /// A fake repo whose `rev-list --all` returns `hashes`, with full commit
+    /// data (message/author/date) configured for every hash.
+    fn fake_with_hashes(hashes: &[&str]) -> FakeGit {
+        let mut g = FakeGit::default();
+        g.set(&["rev-list", "--all"], Some(hashes.join("\n")));
+        for hash in hashes {
+            g.set(
+                &["log", "-1", "--format=%B", hash],
+                Some("feat: test\n".to_string()),
+            );
+            g.set(
+                &["log", "-1", "--format=%an", hash],
+                Some("Ann".to_string()),
+            );
+            g.set(
+                &["log", "-1", "--format=%ae", hash],
+                Some("ann@x.com".to_string()),
+            );
+            g.set(
+                &["log", "-1", "--date=default", "--format=%ad", hash],
+                Some("Thu Aug 6 05:32:10 2026 +0800".to_string()),
+            );
+        }
+        g
+    }
+
+    #[test]
+    fn commit_by_prefix_single_match_full_and_short() {
+        let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let g = fake_with_hashes(&[a, b]);
+        for prefix in ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaa", "a"] {
+            let data = commit_by_prefix(&g, prefix).unwrap();
+            assert_eq!(data.hash, a);
+            assert_eq!(data.message, "feat: test");
+            assert_eq!(data.author_name.as_deref(), Some("Ann"));
+            assert_eq!(data.author_email.as_deref(), Some("ann@x.com"));
+            assert_eq!(data.date.as_deref(), Some("Thu Aug 6 05:32:10 2026 +0800"));
+        }
+    }
+
+    #[test]
+    fn commit_by_prefix_is_case_insensitive() {
+        let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let g = fake_with_hashes(&[a]);
+        assert_eq!(commit_by_prefix(&g, "AAAA").unwrap().hash, a);
+    }
+
+    #[test]
+    fn commit_by_prefix_multiple_matches_lists_all() {
+        let a = "aaaa11111111111111111111111111111111111111";
+        let b = "aaaa22222222222222222222222222222222222222";
+        let g = fake_with_hashes(&[a, b]);
+        let err = commit_by_prefix(&g, "aaaa").unwrap_err();
+        assert_eq!(
+            err,
+            CommitError::Multiple(vec![a.to_string(), b.to_string()])
+        );
+    }
+
+    #[test]
+    fn commit_by_prefix_no_match() {
+        let g = fake_with_hashes(&["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+        assert_eq!(
+            commit_by_prefix(&g, "bbbb").unwrap_err(),
+            CommitError::NoMatch
+        );
+    }
+
+    #[test]
+    fn commit_by_prefix_rejects_empty_and_non_hex() {
+        let g = fake_with_hashes(&["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+        assert_eq!(commit_by_prefix(&g, "").unwrap_err(), CommitError::NoMatch);
+        assert_eq!(
+            commit_by_prefix(&g, "xyz").unwrap_err(),
+            CommitError::NoMatch
+        );
+    }
+
+    #[test]
+    fn commit_by_prefix_missing_rev_list_is_no_match() {
+        let g = FakeGit::default();
+        assert_eq!(
+            commit_by_prefix(&g, "aaaa").unwrap_err(),
+            CommitError::NoMatch
+        );
+    }
+
+    #[test]
+    fn commit_by_prefix_read_failure_is_read_failed() {
+        let mut g = FakeGit::default();
+        let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        // rev-list returns a single hash, but no `log` entries are configured,
+        // so reading the commit data fails.
+        g.set(&["rev-list", "--all"], Some(a.to_string()));
+        assert_eq!(
+            commit_by_prefix(&g, "aaaa").unwrap_err(),
+            CommitError::ReadFailed
+        );
     }
 
     #[test]

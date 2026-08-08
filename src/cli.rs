@@ -17,6 +17,12 @@ pub struct Cli {
     #[arg(long)]
     pub hash: Option<String>,
 
+    /// Select the commit whose hash starts with this hex prefix
+    /// (case-insensitive); errors when zero or multiple commits match.
+    /// Conflicts with --no-git and --hash.
+    #[arg(long, value_name = "PREFIX", conflicts_with_all = ["no_git", "hash"])]
+    pub commit: Option<String>,
+
     /// Force the commit message.
     #[arg(long)]
     pub message: Option<String>,
@@ -73,8 +79,7 @@ mod tests {
     fn parses_flags() {
         let cli = Cli::try_parse_from([
             "blamefetch",
-            "--no-git",
-            "--hash",
+            "--commit",
             "abc123",
             "--message",
             "hello",
@@ -92,9 +97,8 @@ mod tests {
             "-v",
         ])
         .unwrap();
-        assert!(cli.no_git);
         assert!(cli.color);
-        assert_eq!(cli.hash.as_deref(), Some("abc123"));
+        assert_eq!(cli.commit.as_deref(), Some("abc123"));
         assert_eq!(cli.message.as_deref(), Some("hello"));
         assert_eq!(cli.author.as_deref(), Some("Ann"));
         assert_eq!(cli.email.as_deref(), Some("a@x.com"));
@@ -106,5 +110,13 @@ mod tests {
             Some(std::path::Path::new("/tmp/cfg.toml"))
         );
         assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn parses_no_git_and_hash() {
+        let cli = Cli::try_parse_from(["blamefetch", "--no-git", "--hash", "abc123"]).unwrap();
+        assert!(cli.no_git);
+        assert_eq!(cli.hash.as_deref(), Some("abc123"));
+        assert!(cli.commit.is_none());
     }
 }

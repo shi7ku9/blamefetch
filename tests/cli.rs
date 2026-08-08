@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -38,6 +39,25 @@ fn make_repo() -> tempfile::TempDir {
             "test commit",
         ],
     );
+    dir
+}
+
+/// A repo with `count` commits (one empty-ish file change per commit), all
+/// authored by "Test User".
+fn make_commits_repo(count: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.name", "Test User"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
+    for i in 0..count {
+        let msg = format!("commit {i}");
+        std::fs::write(dir.path().join("f.txt"), format!("{i}\n")).unwrap();
+        git(dir.path(), &["add", "."]);
+        git(
+            dir.path(),
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", &msg],
+        );
+    }
     dir
 }
 
@@ -130,6 +150,248 @@ fn uses_real_commit_in_repo() {
         stdout.contains("Date: "),
         "real commit must show its author date:\n{stdout}"
     );
+}
+
+#[test]
+fn commit_flag_full_hash_uses_commit() {
+    let repo = make_repo();
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim().to_string();
+    let out = bin()
+        .arg("--commit")
+        .arg(&head)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {head}\n")),
+        "should use the selected commit hash:\n{stdout}"
+    );
+    assert!(stdout.contains("test commit"));
+    assert!(stdout.contains("Author: Test User <test@example.com>"));
+}
+
+#[test]
+fn commit_flag_short_uppercase_prefix_matches() {
+    let repo = make_repo();
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim().to_string();
+    let out = bin()
+        .arg("--commit")
+        .arg(head[..8].to_uppercase())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {head}\n")),
+        "short uppercase prefix should match the HEAD hash:\n{stdout}"
+    );
+}
+
+#[test]
+fn commit_flag_multiple_matches_errors() {
+    // 17 commits over 16 possible first hex digits guarantee by the
+    // pigeonhole principle that at least one one-character prefix matches
+    // two or more hashes, so the error path is deterministic.
+    let repo = make_commits_repo(17);
+    let all = String::from_utf8(git(repo.path(), &["rev-list", "--all"]).stdout).unwrap();
+    let hashes: Vec<&str> = all
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(hashes.len() >= 17);
+    let mut groups: BTreeMap<char, Vec<String>> = BTreeMap::new();
+    for hash in &hashes {
+        groups
+            .entry(hash.chars().next().unwrap())
+            .or_default()
+            .push(hash.to_string());
+    }
+    let (_, candidates) = groups
+        .iter()
+        .find(|(_, v)| v.len() >= 2)
+        .expect("17 hashes must share at least one first hex digit");
+    let prefix = candidates[0][..1].to_string();
+
+    let out = bin()
+        .arg("--commit")
+        .arg(&prefix)
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("matches") && stderr.contains("commits:"),
+        "multiple-match error expected:\n{stderr}"
+    );
+    for hash in candidates {
+        assert!(
+            stderr.contains(hash),
+            "candidate {hash} must be listed in the error:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn commit_flag_no_match_errors() {
+    let repo = make_repo();
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim();
+    // Deterministic no-match: rotate HEAD's first hex digit to a different
+    // one, which cannot be the first digit of the only commit in the repo.
+    let first = head.chars().next().unwrap().to_digit(16).unwrap();
+    let other = char::from_digit((first + 1) % 16, 16).unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg(other.to_string())
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("does not match any commit"),
+        "no-match error expected:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_conflicts_with_no_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg("abc")
+        .arg("--no-git")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("cannot be used with"),
+        "--commit must conflict with --no-git:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_conflicts_with_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg("abc")
+        .arg("--hash")
+        .arg("def")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("cannot be used with"),
+        "--commit must conflict with --hash:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_empty_prefix_errors() {
+    let repo = make_repo();
+    let out = bin()
+        .arg("--commit")
+        .arg("")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("non-empty hexadecimal"),
+        "empty prefix must be rejected with a hex hint:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_non_hex_prefix_errors() {
+    let repo = make_repo();
+    let out = bin()
+        .arg("--commit")
+        .arg("xyz")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("non-empty hexadecimal"),
+        "non-hex prefix must be rejected with a hex hint:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_outside_repo_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = bin()
+        .arg("--commit")
+        .arg("abc")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("requires being inside a Git repository"),
+        "--commit outside a repo must explain the requirement:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_empty_repo_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    let out = bin()
+        .arg("--commit")
+        .arg("abc")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("does not match any commit"),
+        "an empty repo must report no match:\n{stderr}"
+    );
+}
+
+#[test]
+fn commit_flag_author_and_message_overrides() {
+    let repo = make_repo();
+    let head = String::from_utf8(git(repo.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let head = head.trim().to_string();
+    let out = bin()
+        .arg("--commit")
+        .arg(&head)
+        .arg("--author")
+        .arg("CLI User")
+        .arg("--email")
+        .arg("cli@x.com")
+        .arg("--message")
+        .arg("forced message")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with(&format!("commit {head}\n")),
+        "selected commit hash must remain:\n{stdout}"
+    );
+    assert!(stdout.contains("Author: CLI User <cli@x.com>"), "{stdout}");
+    assert!(stdout.contains("    forced message"), "{stdout}");
 }
 
 #[test]
