@@ -121,9 +121,15 @@ fn find_shell_in_chain(
 /// shebang shells like xonsh run as `python3 /usr/bin/xonsh` — but the
 /// command line still carries it. `cmd[0]` alone also covers `hidepid`, where
 /// the exe link is unreadable but the command line is not. Empty values are
-/// dropped. The caller only ever *executes* a returned path when it contains
-/// a separator, and only when its basename is a known shell, so a crafted
-/// argv[0] cannot reach the version probe.
+/// dropped.
+///
+/// What the version probe guarantees: it only runs a returned path that
+/// contains a path separator AND whose basename is a known shell name, so a
+/// bare name is never resolved through PATH. That is not a security boundary
+/// though: a parent process controls its own argv, so it can name any file
+/// like a shell (e.g. `python3 /tmp/evil/bash`) and have the `--version`
+/// probe run it. Such a parent already has this process's privileges, so no
+/// privilege is gained.
 fn process_shell_candidates(exe: Option<&Path>, cmd: &[OsString]) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(exe) = exe.filter(|p| !p.as_os_str().is_empty()) {
