@@ -375,6 +375,36 @@ fn print_config_works() {
         !stdout.contains("sample"),
         "defaults must not contain sample fixtures"
     );
+    // Section defaults live in the sources now; the embedded config only
+    // declares the roster, so no name/email may leak into the output.
+    assert!(
+        !stdout.contains("@system.invalid"),
+        "defaults must not carry email addresses:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("\"name\""),
+        "defaults must not carry section names:\n{stdout}"
+    );
+}
+
+#[test]
+fn example_config_print_config_matches_file() {
+    // README claims example/config.json is the exact JSON produced by
+    // `blamefetch --config example/config.json --print-config`; pin it.
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("example/config.json");
+    let out = bin()
+        .arg("--print-config")
+        .arg("--config")
+        .arg(&example)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let file = std::fs::read_to_string(&example).unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout, file,
+        "example/config.json must match --print-config output"
+    );
 }
 
 #[cfg(unix)]

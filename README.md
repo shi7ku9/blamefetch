@@ -138,7 +138,7 @@ platform's config directory).
 
 A complete effective configuration matching the sample output above is
 included at [example/config.json](example/config.json) — it is the exact JSON
-produced by `blamefetch --print-config`.
+produced by `blamefetch --config example/config.json --print-config`.
 
 `name` and `email` support `{placeholder}` templates filled by `fields`; field
 values can be plain strings or shell commands:

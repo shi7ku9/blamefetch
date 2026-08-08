@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Canonical display order of the built-in kinds, used when a config omits
-/// `order`. Must mirror the registry in `sources::all_sources()`.
-pub const DEFAULT_KIND_ORDER: [&str; 14] = [
-    "os", "kernel", "host", "hostname", "user", "shell", "terminal", "wm", "uptime", "cpu", "gpu",
-    "memory", "disk", "locale",
-];
+/// `order`. Derived from the source registry itself so the two cannot drift
+/// apart.
+pub fn canonical_kind_order() -> Vec<&'static str> {
+    crate::sources::all_sources()
+        .into_iter()
+        .map(|s| s.kind())
+        .collect()
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -160,14 +163,17 @@ impl Config {
                 })
                 .collect(),
             None => {
-                let mut out = Vec::new();
-                for kind in DEFAULT_KIND_ORDER {
-                    if let Some(entry) = self.sections.get(kind) {
-                        out.push((kind.to_string(), entry));
-                    }
-                }
+                let canonical = canonical_kind_order();
+                let mut out: Vec<(String, &SectionEntry)> = canonical
+                    .iter()
+                    .filter_map(|kind| {
+                        self.sections
+                            .get(*kind)
+                            .map(|entry| (kind.to_string(), entry))
+                    })
+                    .collect();
                 for (key, entry) in &self.sections {
-                    if !DEFAULT_KIND_ORDER.contains(&key.as_str()) {
+                    if !canonical.contains(&key.as_str()) {
                         out.push((key.clone(), entry));
                     }
                 }
@@ -299,8 +305,8 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        CoAuthorConfig, CommitConfig, Config, DEFAULT_KIND_ORDER, FieldValue, MessagesConfig,
-        SectionEntry,
+        CoAuthorConfig, CommitConfig, Config, FieldValue, MessagesConfig, SectionEntry,
+        canonical_kind_order,
     };
 
     fn base() -> Config {
@@ -316,8 +322,8 @@ mod tests {
     fn defaults_parse_with_roster_and_pool() {
         let c = base();
         assert!(!c.messages.pool.is_empty());
-        assert_eq!(c.sections.len(), DEFAULT_KIND_ORDER.len());
-        for kind in DEFAULT_KIND_ORDER {
+        assert_eq!(c.sections.len(), canonical_kind_order().len());
+        for kind in canonical_kind_order() {
             assert!(
                 matches!(c.sections.get(kind), Some(SectionEntry::CoAuthor(_))),
                 "missing built-in section {kind}"
@@ -326,10 +332,15 @@ mod tests {
     }
 
     #[test]
-    fn default_order_lists_all_kinds_in_canonical_order() {
+    fn default_config_carries_no_order_and_uses_canonical() {
         let c = base();
-        let order = c.order.clone().expect("default config carries an order");
-        assert_eq!(order, DEFAULT_KIND_ORDER);
+        assert!(
+            c.order.is_none(),
+            "default config must not carry an order list"
+        );
+        let listed = c.ordered_sections();
+        let keys: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, canonical_kind_order());
     }
 
     #[test]
@@ -458,7 +469,12 @@ mod tests {
         assert_eq!(parsed.sections.len(), c.sections.len());
         assert_eq!(
             parsed.order,
-            Some(DEFAULT_KIND_ORDER.iter().map(|k| k.to_string()).collect()),
+            Some(
+                canonical_kind_order()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            ),
             "to_json must materialize the resolved display order"
         );
     }
@@ -609,15 +625,6 @@ mod tests {
         let listed = c.ordered_sections();
         let order: Vec<&str> = listed.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(order, ["os", "kernel", "alpha", "zeta"]);
-    }
-
-    #[test]
-    fn canonical_kind_order_matches_source_registry() {
-        let kinds: Vec<&str> = crate::sources::all_sources()
-            .iter()
-            .map(|s| s.kind())
-            .collect();
-        assert_eq!(kinds, DEFAULT_KIND_ORDER);
     }
 
     fn utf8_neko() -> Config {
