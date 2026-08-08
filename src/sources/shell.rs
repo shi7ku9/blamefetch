@@ -156,7 +156,9 @@ enum VersionStrategy {
 /// table get no version (the name is still reported) and nothing is executed.
 fn version_strategy(name: &str) -> Option<VersionStrategy> {
     match shell_stem(name).as_str() {
-        "bash" | "zsh" | "fish" => Some(VersionStrategy::Flag(&["--version"])),
+        "bash" | "zsh" | "fish" | "nu" | "elvish" | "xonsh" | "pwsh" => {
+            Some(VersionStrategy::Flag(&["--version"]))
+        }
         _ => None,
     }
 }
@@ -182,13 +184,22 @@ fn flag_version(path: &str, flags: &[&str]) -> Option<String> {
 }
 
 /// Extracts a version from a shell's `--version` first line without assuming a
-/// particular shell's output shape. Returns the first whitespace-separated
-/// token that starts with a digit, truncated at an opening parenthesis (so
-/// bash's `5.3.9(1)-release` becomes `5.3.9`).
+/// particular shell's output shape. Picks the first whitespace-separated token
+/// whose version starts at its first digit — at the token start (zsh's
+/// `5.9.1`), after a leading `v` (`v0.21.0`), or after a slash prefix
+/// (xonsh's `xonsh/0.19.1`) — then cuts from that digit and truncates at an
+/// opening parenthesis (so bash's `5.3.9(1)-release` becomes `5.3.9`).
 fn parse_shell_version(line: &str) -> Option<String> {
     line.split_whitespace()
-        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        .map(|t| t.split('(').next().unwrap().to_string())
+        .find(|t| {
+            t.find(|c: char| c.is_ascii_digit()).is_some_and(|pos| {
+                pos == 0 || (t.starts_with('v') && pos == 1) || t[..pos].contains('/')
+            })
+        })
+        .map(|t| {
+            let start = t.find(|c: char| c.is_ascii_digit()).unwrap();
+            t[start..].split('(').next().unwrap().to_string()
+        })
 }
 
 #[cfg(test)]
@@ -347,7 +358,10 @@ mod tests {
 
     #[test]
     fn version_strategy_known_shells() {
-        for name in ["bash", "zsh", "fish", "bash.exe", "BASH.EXE"] {
+        for name in [
+            "bash", "zsh", "fish", "nu", "elvish", "xonsh", "pwsh", "bash.exe", "BASH.EXE",
+            "PWSH.EXE",
+        ] {
             assert!(
                 version_strategy(name).is_some(),
                 "{name} should have a strategy"
@@ -369,7 +383,8 @@ mod tests {
 
     #[test]
     fn version_strategy_unknown_is_none() {
-        for name in ["sh", "dash", "nu", "cargo"] {
+        // ksh etc. have no verified `--version` shape yet — one-line follow-ups.
+        for name in ["sh", "dash", "ksh", "mksh", "tcsh", "cargo"] {
             assert!(
                 version_strategy(name).is_none(),
                 "{name} should have no strategy"
@@ -402,8 +417,54 @@ mod tests {
     }
 
     #[test]
+    fn parses_nu_style_version() {
+        assert_eq!(parse_shell_version("1.128.0"), Some("1.128.0".to_string()));
+    }
+
+    #[test]
+    fn parses_elvish_style_version() {
+        assert_eq!(parse_shell_version("0.21.0"), Some("0.21.0".to_string()));
+    }
+
+    #[test]
+    fn parses_v_prefixed_version() {
+        // Defensive: some distro-patched shells print `Elvish v0.21.0`.
+        assert_eq!(
+            parse_shell_version("Elvish v0.21.0"),
+            Some("0.21.0".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_xonsh_style_version() {
+        // xonsh prints its version as one token with a slash prefix.
+        assert_eq!(
+            parse_shell_version("xonsh/0.19.1"),
+            Some("0.19.1".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_pwsh_style_version() {
+        assert_eq!(
+            parse_shell_version("PowerShell 7.5.2"),
+            Some("7.5.2".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_ksh_style_version() {
+        assert_eq!(
+            parse_shell_version("version sh (AT&T Research) 93u+m/1.0.9"),
+            Some("93u+m/1.0.9".to_string())
+        );
+    }
+
+    #[test]
     fn no_version_token_is_none() {
         assert_eq!(parse_shell_version("Some Shell"), None);
         assert_eq!(parse_shell_version(""), None);
+        // A parenthesized platform tag is not a version token.
+        assert_eq!(parse_shell_version("(x86_64-pc-linux-gnu)"), None);
     }
 }
