@@ -251,29 +251,6 @@ distinguishing machine credits from tool credits (here `os`, `kernel`, and
 }
 ```
 
-## Migrating from TOML
-
-The old `[[co_authors]]` array becomes the `sections` object; each entry's
-`kind` becomes its key, and the array order becomes the `order` array. An
-empty string text section replaces `blank_line_before = true`:
-
-```json
-{
-  "sections": {
-    "os":    { "name": "{name} {version}", "email": "os@system.invalid" },
-    "blank": "",
-    "claude": {
-      "name": "Claude {version}",
-      "email": "noreply@anthropic.com",
-      "fields": {
-        "version": { "command": "claude --version | cut -d' ' -f1", "fallback": "" }
-      }
-    }
-  },
-  "order": ["os", "blank", "claude"]
-}
-```
-
 ## Safety
 
 Commands configured in `fields`, `name`, `email`, or a text section's `fields`
