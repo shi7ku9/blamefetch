@@ -4,8 +4,10 @@ A satirical neofetch that blames your whole machine for the commit.
 
 `blamefetch` prints a fake `git show`-style commit — using a real commit from
 the current repository when possible, or generated random data when not — and
-credits your OS, kernel, host, user, shell, editor, and hardware as
-`Co-Authored-By` trailers.
+credits your OS, kernel, host, hostname, user, shell, terminal, window manager,
+uptime, CPU, GPU, memory, disk, and locale as `Co-Authored-By` trailers.
+Anything else — such as editor or tool credits — comes from your configuration
+(see the example config below).
 
 It never creates or modifies commits. It just prints.
 
@@ -176,10 +178,16 @@ blamefetch is display-only. It never creates, amends, pushes, or otherwise
 modifies commits or Git history. When inside a repository, it only runs
 read-only Git commands (`rev-parse`, `rev-list`, `log`).
 
-blamefetch's only built-in process execution is a set of read-only probes:
-`uname -r` for the `kernel` co-author, `lspci -nn` for the `gpu` co-author,
-and the detected shell's `--version` for the `shell` co-author (bash, zsh,
-fish, nu, elvish, xonsh, and pwsh). No other commands run on their own.
+blamefetch's own probes are read-only: `uname -r` for the `kernel` co-author,
+`lspci -nn` for the `gpu` co-author, and the detected shell's `--version` for
+the `shell` co-author (bash, zsh, fish, nu, elvish, xonsh, and pwsh). The
+`os_info` library behind the `os` co-author additionally runs its own
+read-only platform queries — on Linux `lsb_release -a` and `getconf LONG_BIT`
+(plus `uname -m` if the uname syscall fails), on macOS `sw_vers`, on FreeBSD
+`/sbin/sysctl` plus `getconf LONG_BIT`, and on NetBSD/OpenBSD a `sysctl -n`
+bitness probe (their versions come from the `uname` syscall) — and those run
+on every invocation, even when the `os` section is not rendered. No other
+commands run on their own.
 Commands run only if you configure them in a `sections` entry via `name`,
 `email`, `fields`, or a text section's `fields` with `{ "command": ... }`.
 Such commands run through your platform shell (`sh -c` on

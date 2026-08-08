@@ -209,7 +209,7 @@ fn main() -> ExitCode {
             Some(data) => (data, None),
             None => (
                 git::GitData::random(&config, &mut rng),
-                Some("not inside a git repository"),
+                Some("not inside a git repository, or git probing failed"),
             ),
         }
     };
@@ -221,7 +221,8 @@ fn main() -> ExitCode {
 
     let fallback_user = git::username().unwrap_or_else(|| "unknown".to_string());
     // Precedence: explicit CLI flags, then the picked commit's own author, then
-    // the config default (only used outside a repo / --no-git), then $USER.
+    // the config default (reached whenever the git data carries no author:
+    // outside a repo, --no-git, or after a failed git probe), then $USER.
     let author_name = cli
         .author
         .or_else(|| git.author_name.clone())
