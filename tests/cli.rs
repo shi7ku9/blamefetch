@@ -844,9 +844,12 @@ fn print_config_works() {
 }
 
 #[test]
-fn example_config_print_config_matches_file() {
-    // README claims example/config.json is the exact JSON produced by
-    // `blamefetch --config example/config.json --print-config`; pin it.
+fn example_config_is_subset_of_print_config() {
+    // README says example/config.json is the config behind the sample
+    // output. `--print-config` prints the *effective* config (built-in
+    // probe sections merged in), so the file must be a subset of it —
+    // every declared section survives unchanged, and the resolved order
+    // is exactly the declared one.
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("example/config.json");
     let out = bin()
         .arg("--print-config")
@@ -855,12 +858,32 @@ fn example_config_print_config_matches_file() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    let file = std::fs::read_to_string(&example).unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
+    let printed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&example).unwrap()).unwrap();
+
+    let printed_sections = printed["sections"].as_object().unwrap();
+    let file_sections = file["sections"].as_object().unwrap();
+    for (key, entry) in file_sections {
+        assert_eq!(
+            printed_sections.get(key),
+            Some(entry),
+            "section {key:?} declared in example/config.json must appear unchanged in --print-config output"
+        );
+    }
     assert_eq!(
-        stdout, file,
-        "example/config.json must match --print-config output"
+        printed["order"], file["order"],
+        "--print-config must materialize exactly the order declared in example/config.json"
     );
+
+    // The built-in probe sections are compiled in, not declared.
+    for kind in ["os", "kernel", "cpu", "gpu", "wm"] {
+        assert!(
+            printed_sections.contains_key(kind),
+            "--print-config must include the built-in {kind} section even though example/config.json does not declare it"
+        );
+    }
 }
 
 #[cfg(unix)]

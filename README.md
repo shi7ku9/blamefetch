@@ -143,9 +143,11 @@ platform's config directory).
 - `order` — the exact display list: only listed sections render, in listed
   order; sections omitted from `order` are not shown.
 
-A complete effective configuration matching the sample output above is
-included at [example/config.json](example/config.json) — it is the exact JSON
-produced by `blamefetch --config example/config.json --print-config`.
+A configuration producing the sample output above is included at
+[example/config.json](example/config.json). It declares only the roster
+(sections, templates and `order`); the built-in kinds are compiled in and
+merged automatically. `blamefetch --config example/config.json --print-config`
+shows the full effective configuration.
 
 `name` and `email` support `{placeholder}` templates filled by `fields`; field
 values can be plain strings or shell commands:
