@@ -23,8 +23,10 @@ It never creates or modifies commits. It just prints.
   resolved interpreter binary, so a `sh` script may report `dash` or `bash`.
 - Fully configurable through `~/.config/blamefetch/config.json`, including
   custom co-authors, plain text lines, message pools, and shell-command fields.
-- Reproducible output with `--seed` (except the `Date:` line, which is
-  relative to the current time).
+- `--seed` only guarantees reproducibility of the commit selection: the same
+  seed picks the same commit from the same repository, and only while the
+  repository's history is unchanged. Other parts of the output (system info,
+  and the `Date:` line when it is generated) still vary.
 - Optional colored output with `--color`.
 - Sections resolve concurrently, each with a per-section timeout (default
   5 s, overridable via `BLAMEFETCH_SECTION_TIMEOUT_MS`); a section that hangs
@@ -82,7 +84,7 @@ Outside a repository, or with `--no-git`, random commit data is generated;
 | `--author <AUTHOR>` | Force the author name. |
 | `--email <EMAIL>` | Force the author email. |
 | `--color` | Colorize the output. |
-| `--seed <SEED>` | Seed the RNG for reproducible output. |
+| `--seed <SEED>` | Seed the RNG used for commit selection. Only guarantees the same commit from the same, unchanged repository; it does not make the rest of the output reproducible. |
 | `--list-sources` | List available co-author kinds and exit. |
 | `--print-config` | Print the effective config (defaults merged with the config file) and exit. |
 | `--config <PATH>` | Path to a config file. |

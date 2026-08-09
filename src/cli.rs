@@ -39,7 +39,7 @@ pub struct Cli {
     #[arg(long)]
     pub color: bool,
 
-    /// Seed the RNG for reproducible output.
+    /// Seed the RNG used for commit selection; the rest of the output still varies.
     #[arg(long)]
     pub seed: Option<u64>,
 
