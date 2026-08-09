@@ -1,16 +1,16 @@
 {
   "commit": {
-    "author_name": "貓娘 shi7ku9",
+    "author_name": "shi7ku9",
     "author_email": "neko@shi7ku9.example"
   },
   "messages": {
-    "pool": ["feat: 貓娘 shi7ku9 參上！"]
+    "pool": ["feat: 我是貓娘，搖著尾巴參上喵！"]
   },
   "sections": {
-    "メモ": "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！",
-    "greeting": { "text": "猫娘 shi7ku9 参上！にゃん" },
+    "メモ": "私は猫娘、お耳ぴこぴこで頑張るにゃ！",
+    "greeting": { "text": "にゃん！私は猫娘、尻尾ふりふり參上だよ！" },
     "貓娘": {
-      "name": "貓娘 shi7ku9 {rank}",
+      "name": "shi7ku9 {rank}",
       "email": "neko@shi7ku9.example",
       "fields": { "rank": "SSS" }
     }

@@ -1179,23 +1179,23 @@ fn utf8_config_renders_chinese_and_japanese() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains("Author: 貓娘 shi7ku9 <neko@shi7ku9.example>"),
+        stdout.contains("Author: shi7ku9 <neko@shi7ku9.example>"),
         "Chinese author from config must render:\n{stdout}"
     );
     assert!(
-        stdout.contains("    feat: 貓娘 shi7ku9 參上！"),
+        stdout.contains("    feat: 我是貓娘，搖著尾巴參上喵！"),
         "Chinese message from the config pool must render:\n{stdout}"
     );
     assert!(
-        stdout.contains("    今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"),
+        stdout.contains("    私は猫娘、お耳ぴこぴこで頑張るにゃ！"),
         "Japanese text line must render:\n{stdout}"
     );
     assert!(
-        stdout.contains("    猫娘 shi7ku9 参上！にゃん"),
+        stdout.contains("    にゃん！私は猫娘、尻尾ふりふり參上だよ！"),
         "Japanese text-field line must render:\n{stdout}"
     );
     assert!(
-        stdout.contains("    Co-Authored-By: 貓娘 shi7ku9 SSS <neko@shi7ku9.example>"),
+        stdout.contains("    Co-Authored-By: shi7ku9 SSS <neko@shi7ku9.example>"),
         "Chinese co-author trailer with filled field must render:\n{stdout}"
     );
 }
@@ -1212,20 +1212,23 @@ fn utf8_config_print_config_preserves_chinese_and_japanese() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains("貓娘 shi7ku9"),
+        stdout.contains("我是貓娘"),
         "Chinese catgirl name must survive --print-config:\n{stdout}"
     );
     assert!(
-        stdout.contains("今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"),
+        stdout.contains("私は猫娘、お耳ぴこぴこで頑張るにゃ！"),
         "Japanese text must survive --print-config:\n{stdout}"
     );
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed["commit"]["author_name"], "貓娘 shi7ku9");
+    assert_eq!(parsed["commit"]["author_name"], "shi7ku9");
     assert_eq!(
         parsed["sections"]["メモ"],
-        "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"
+        "私は猫娘、お耳ぴこぴこで頑張るにゃ！"
     );
-    assert_eq!(parsed["sections"]["貓娘"]["name"], "貓娘 shi7ku9 {rank}");
-    assert_eq!(parsed["messages"]["pool"][0], "feat: 貓娘 shi7ku9 參上！");
+    assert_eq!(parsed["sections"]["貓娘"]["name"], "shi7ku9 {rank}");
+    assert_eq!(
+        parsed["messages"]["pool"][0],
+        "feat: 我是貓娘，搖著尾巴參上喵！"
+    );
 }

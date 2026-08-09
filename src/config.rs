@@ -831,21 +831,21 @@ mod tests {
     #[test]
     fn utf8_config_loads_chinese_and_japanese() {
         let c = utf8_neko();
-        assert_eq!(c.commit.author_name.as_deref(), Some("貓娘 shi7ku9"));
+        assert_eq!(c.commit.author_name.as_deref(), Some("shi7ku9"));
         assert_eq!(
             c.commit.author_email.as_deref(),
             Some("neko@shi7ku9.example")
         );
-        assert_eq!(c.messages.pool, vec!["feat: 貓娘 shi7ku9 參上！"]);
+        assert_eq!(c.messages.pool, vec!["feat: 我是貓娘，搖著尾巴參上喵！"]);
 
         assert!(matches!(
             c.sections.get("メモ"),
             Some(SectionEntry::TextLine(s))
-                if s == "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"
+                if s == "私は猫娘、お耳ぴこぴこで頑張るにゃ！"
         ));
         match c.sections.get("greeting") {
             Some(SectionEntry::TextField(tf)) => {
-                assert_eq!(tf.text, "猫娘 shi7ku9 参上！にゃん");
+                assert_eq!(tf.text, "にゃん！私は猫娘、尻尾ふりふり參上だよ！");
                 assert!(tf.fields.is_empty());
             }
             _ => panic!("expected TextField"),
@@ -854,7 +854,7 @@ mod tests {
             Some(SectionEntry::CoAuthor(ca)) => {
                 assert_eq!(
                     ca.name,
-                    Some(FieldValue::Value("貓娘 shi7ku9 {rank}".to_string()))
+                    Some(FieldValue::Value("shi7ku9 {rank}".to_string()))
                 );
                 assert_eq!(
                     ca.email,
@@ -875,23 +875,26 @@ mod tests {
         let printed = c.to_json();
         // The printed JSON must carry the same bytes, not mojibake or
         // replacement characters.
-        assert!(printed.contains("貓娘 shi7ku9"));
-        assert!(printed.contains("猫娘 shi7ku9"));
-        assert!(printed.contains("今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"));
+        assert!(printed.contains("我是貓娘"));
+        assert!(printed.contains("私は猫娘"));
+        assert!(printed.contains("私は猫娘、お耳ぴこぴこで頑張るにゃ！"));
 
         let parsed: Config = serde_json::from_str(&printed).unwrap();
-        assert_eq!(parsed.commit.author_name.as_deref(), Some("貓娘 shi7ku9"));
-        assert_eq!(parsed.messages.pool, vec!["feat: 貓娘 shi7ku9 參上！"]);
+        assert_eq!(parsed.commit.author_name.as_deref(), Some("shi7ku9"));
+        assert_eq!(
+            parsed.messages.pool,
+            vec!["feat: 我是貓娘，搖著尾巴參上喵！"]
+        );
         assert!(matches!(
             parsed.sections.get("メモ"),
             Some(SectionEntry::TextLine(s))
-                if s == "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！"
+                if s == "私は猫娘、お耳ぴこぴこで頑張るにゃ！"
         ));
         match parsed.sections.get("貓娘") {
             Some(SectionEntry::CoAuthor(ca)) => {
                 assert_eq!(
                     ca.name,
-                    Some(FieldValue::Value("貓娘 shi7ku9 {rank}".to_string()))
+                    Some(FieldValue::Value("shi7ku9 {rank}".to_string()))
                 );
                 assert_eq!(
                     ca.email,

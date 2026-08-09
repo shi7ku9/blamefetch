@@ -122,13 +122,13 @@ mod tests {
         let mut f = HashMap::new();
         f.insert("rank".to_string(), "SSS".to_string());
         assert_eq!(
-            render("貓娘 shi7ku9 {rank}", &f),
-            "貓娘 shi7ku9 SSS",
+            render("私は猫娘 {rank}", &f),
+            "私は猫娘 SSS",
             "multibyte text before a placeholder must render verbatim"
         );
         assert_eq!(
-            render("今日も猫娘 shi7ku9 と一緒に頑張るにゃ！", &HashMap::new()),
-            "今日も猫娘 shi7ku9 と一緒に頑張るにゃ！",
+            render("にゃん！私は猫娘、尻尾ふりふり參上だよ！", &HashMap::new()),
+            "にゃん！私は猫娘、尻尾ふりふり參上だよ！",
             "plain UTF-8 text without braces must render verbatim"
         );
     }
