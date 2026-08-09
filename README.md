@@ -197,9 +197,12 @@ Unix, `cmd /C` on Windows) without a sandbox, with blamefetch's own
 permissions — normally the invoking user's. If you run blamefetch with
 elevated privileges (e.g. via `sudo` or as a service), those commands run
 with the elevated privileges, and the shell probe may execute a path chosen
-by a lower-privileged ancestor process. Do not run blamefetch with elevated
-privileges unless you also trust the config and the shell environment it
-detects.
+by a lower-privileged ancestor process. The probe refuses symlink targets
+whose name no longer looks like a shell, and it can be disabled entirely by
+setting `BLAMEFETCH_NO_SHELL_VERSION=1` (any non-empty value other than
+`0`), in which case no detected shell path is ever executed. Do not run
+blamefetch with elevated privileges unless you also trust the config and
+the shell environment it detects.
 
 Only run config files you trust. You are responsible for reviewing any
 configuration — including any commands inside it — before running blamefetch.

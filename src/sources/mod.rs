@@ -46,7 +46,17 @@ impl SourceContext {
             os_info: os_info::get(),
             hostname,
             username: whoami::username().unwrap_or_default(),
-            env: std::env::vars().collect(),
+            // `vars_os()` + lossy, not `vars()`: a non-UTF-8 variable (set by
+            // a terminal, CI, a service manager, ...) must degrade to the
+            // replacement character instead of panicking the whole run.
+            env: std::env::vars_os()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.to_string_lossy().into_owned(),
+                    )
+                })
+                .collect(),
         }
     }
 

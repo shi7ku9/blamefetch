@@ -13,7 +13,7 @@ pub fn canonical_kind_order() -> Vec<&'static str> {
         .collect()
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub commit: CommitConfig,
@@ -113,10 +113,10 @@ impl Config {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     report_unknown_keys(&text);
-                    match serde_json::from_str::<Config>(&text) {
+                    match Self::parse_user_config(&text) {
                         Ok(user) => cfg.merge(user),
                         Err(err) => eprintln!(
-                            "blamefetch: warning: failed to parse config {}: {err}; using defaults",
+                            "blamefetch: warning: {err} (in {}); using defaults",
                             path.display()
                         ),
                     }
@@ -128,6 +128,61 @@ impl Config {
             }
         }
         cfg
+    }
+
+    /// Parses a user config file with per-key tolerance: a malformed
+    /// `sections` entry only drops that entry, and a malformed top-level key
+    /// only drops that key — each with a warning naming the JSON path —
+    /// instead of discarding the whole file over one typo. Only a JSON syntax
+    /// error (or a non-object document) rejects the file outright.
+    fn parse_user_config(text: &str) -> Result<Config, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| format!("failed to parse config: {e}"))?;
+        let Some(obj) = value.as_object() else {
+            return Err("config root must be a JSON object".to_string());
+        };
+        let mut user = Config::default();
+
+        if let Some(v) = obj.get("commit") {
+            match serde_json::from_value::<CommitConfig>(v.clone()) {
+                Ok(c) => user.commit = c,
+                Err(e) => eprintln!("blamefetch: warning: ignoring invalid \"commit\" entry: {e}"),
+            }
+        }
+        if let Some(v) = obj.get("messages") {
+            match serde_json::from_value::<MessagesConfig>(v.clone()) {
+                Ok(m) => user.messages = m,
+                Err(e) => {
+                    eprintln!("blamefetch: warning: ignoring invalid \"messages\" entry: {e}")
+                }
+            }
+        }
+        if let Some(v) = obj.get("order") {
+            match serde_json::from_value::<Vec<String>>(v.clone()) {
+                Ok(o) => user.order = Some(o),
+                Err(e) => eprintln!("blamefetch: warning: ignoring invalid \"order\": {e}"),
+            }
+        }
+        if let Some(v) = obj.get("sections") {
+            match v.as_object() {
+                Some(sections) => {
+                    for (key, entry) in sections {
+                        match serde_json::from_value::<SectionEntry>(entry.clone()) {
+                            Ok(e) => {
+                                user.sections.insert(key.clone(), e);
+                            }
+                            Err(e) => eprintln!(
+                                "blamefetch: warning: ignoring invalid section {key:?}: {e}"
+                            ),
+                        }
+                    }
+                }
+                None => eprintln!(
+                    "blamefetch: warning: ignoring invalid \"sections\" (must be an object)"
+                ),
+            }
+        }
+        Ok(user)
     }
 
     /// The effective config as JSON, with `order` materialized to the resolved
@@ -514,6 +569,66 @@ mod tests {
         std::fs::write(&path, "{ this is not json").unwrap();
         let c = Config::load(Some(&path));
         assert!(!c.sections.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn non_object_config_falls_back_to_defaults() {
+        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-obj-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("array.json");
+        std::fs::write(&path, "[1, 2, 3]").unwrap();
+        let c = Config::load(Some(&path));
+        assert_eq!(c.sections.len(), canonical_kind_order().len());
+        assert!(c.order.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bad_section_field_drops_only_that_section() {
+        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-part-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("partial.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "sections": {
+                    "broken": { "name": "X", "email": "x@x.com", "fields": {"version": 2} },
+                    "fine": { "name": "OK", "email": "ok@x.com" }
+                },
+                "order": ["fine"]
+            }"#,
+        )
+        .unwrap();
+        let c = Config::load(Some(&path));
+        assert!(
+            c.sections.contains_key("fine"),
+            "an unrelated valid section must survive one bad entry"
+        );
+        assert!(
+            !c.sections.contains_key("broken"),
+            "the malformed section must be dropped, not the whole file"
+        );
+        assert_eq!(c.order.as_deref(), Some(&["fine".to_string()][..]));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn bad_order_dropped_but_sections_kept() {
+        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-ord-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("order.json");
+        std::fs::write(
+            &path,
+            r#"{"sections": {"a": "hi"}, "order": {"not": "an array"}}"#,
+        )
+        .unwrap();
+        let c = Config::load(Some(&path));
+        assert!(matches!(c.sections.get("a"), Some(SectionEntry::TextLine(s)) if s == "hi"));
+        assert!(
+            c.order.is_none(),
+            "invalid order must be dropped, sections kept"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

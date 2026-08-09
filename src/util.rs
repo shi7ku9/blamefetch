@@ -1,7 +1,16 @@
 use std::collections::HashSet;
+use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex};
+
+/// Cap on the bytes collected from a child's stdout before the child is
+/// killed. Two tiers: internal probes (`git rev-list --all` can legitimately
+/// be tens of MB on a very large repository) versus user-config commands,
+/// which are untrusted and must not be able to exhaust memory — `yes` at
+/// ~3 GB/s would otherwise accumulate ~16 GB during a default 5 s timeout.
+const MAX_PROBE_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 /// Child processes still running, keyed by PID. Registered while a command is
 /// awaited so that `kill_running_children` can reap a timed-out section's
@@ -57,6 +66,9 @@ fn spawn_tracked(program: &str, args: &[&str]) -> Option<Child> {
     let mut command = Command::new(program);
     command
         .args(args)
+        // Probes never read input; nulling stdin stops a config command that
+        // reads it from stealing the terminal or consuming the caller's pipe.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
@@ -76,32 +88,84 @@ fn spawn_tracked(program: &str, args: &[&str]) -> Option<Child> {
 
 /// Waits for a spawned child, keeping it registered while it runs. Returns
 /// trimmed stdout, or `None` on spawn failure / non-zero exit / non-UTF-8
-/// output. Empty output is NOT filtered here — callers decide (fail-closed
-/// treats empty as failure).
-fn run_output(child: Child) -> Option<String> {
+/// output / output larger than `max_output` bytes (the child is killed in
+/// that case). Empty output is NOT filtered here — callers decide (fail-
+/// closed treats empty as failure).
+fn run_output(mut child: Child, max_output: u64) -> Option<String> {
     let pid = child.id();
-    let out = child.wait_with_output().ok();
+
+    // Drain stderr on a helper thread so a chatty child cannot deadlock on a
+    // full stderr pipe while we read stdout; the bytes are discarded (never
+    // surfaced). The thread unblocks as soon as the child exits or is killed.
+    let stderr = child.stderr.take();
+    let stderr_thread = stderr.map(|mut err| {
+        std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            let _ = std::io::copy(&mut err, &mut sink);
+        })
+    });
+
+    // Read stdout with a hard byte cap. A misbehaving command (e.g. `yes`)
+    // must not be able to exhaust memory: once the cap is hit the whole
+    // process group is killed and the section fails closed.
+    let mut stdout = Vec::new();
+    let mut failed = false;
+    if let Some(mut pipe) = child.stdout.take() {
+        let mut buf = [0u8; 8192];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let n = n as u64;
+                    if stdout.len() as u64 + n > max_output {
+                        failed = true;
+                        break;
+                    }
+                    stdout.extend_from_slice(&buf[..n as usize]);
+                }
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+    }
+    if failed {
+        kill_group(pid);
+    }
+    let status = child.wait().ok();
+    if let Some(thread) = stderr_thread {
+        let _ = thread.join();
+    }
     RUNNING_CHILDREN.lock().unwrap().remove(&pid);
-    out.filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+    if failed {
+        return None;
+    }
+    status
+        .filter(|s| s.success())
+        .and_then(|_| String::from_utf8(stdout).ok())
         .map(|s| s.trim().to_string())
 }
 
 pub fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    run_output(spawn_tracked(program, args)?)
+    run_output(spawn_tracked(program, args)?, MAX_PROBE_OUTPUT_BYTES)
 }
 
 /// Run a user-supplied command through the platform shell so pipes/globs work.
 /// `sh -c` on Unix, `cmd /C` on Windows. Returns trimmed stdout, or `None`
-/// on spawn failure / non-zero exit / non-UTF-8 output. Empty output is NOT
-/// filtered here — callers decide (fail-closed treats empty as failure).
+/// on spawn failure / non-zero exit / non-UTF-8 output / output over the
+/// command cap. Empty output is NOT filtered here — callers decide (fail-
+/// closed treats empty as failure).
 pub fn sh_output(command: &str) -> Option<String> {
     let (program, flag): (&str, &str) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
         ("sh", "-c")
     };
-    run_output(spawn_tracked(program, &[flag, command])?)
+    run_output(
+        spawn_tracked(program, &[flag, command])?,
+        MAX_COMMAND_OUTPUT_BYTES,
+    )
 }
 
 /// True once the run has given up on timed-out sections. Callers use it to
@@ -109,6 +173,23 @@ pub fn sh_output(command: &str) -> Option<String> {
 /// cancelled command does not produce a second, misleading warning.
 pub fn is_cancelled() -> bool {
     CANCELLED.load(Ordering::Acquire)
+}
+
+/// SIGKILLs one spawned child's process group (covers `sh -c` pipelines)
+/// plus the direct PID as redundant insurance — the leader is in its own
+/// group, but the direct kill is harmless if the group is already gone.
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    // SAFETY: kill(2) on the PID/process group of our own spawned child.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_group(_pid: u32) {
+    // No portable kill-by-PID from std on Windows.
 }
 
 /// Kills every command still running. Call after section resolution: anything
@@ -126,14 +207,7 @@ pub fn kill_running_children() {
     let children = RUNNING_CHILDREN.lock().unwrap();
     CANCELLED.store(true, Ordering::Release);
     for &pid in children.iter() {
-        // Kill the process group first (covers `sh -c` pipelines); the direct
-        // PID afterwards is redundant insurance — the leader is in its own
-        // group — but harmless if the group is already gone.
-        // SAFETY: kill(2) on the PID/process group of our own spawned child.
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-        }
+        kill_group(pid);
     }
 }
 
@@ -152,11 +226,12 @@ pub fn format_bytes(bytes: u64) -> String {
 pub fn format_duration(secs: u64) -> String {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
-    let mins = ((secs % 3600) / 60).max(1);
-    match (days, hours) {
-        (d, _) if d > 0 => format!("{d} days, {hours} hours, {mins} mins"),
-        (0, h) if h > 0 => format!("{h} hours, {mins} mins"),
-        _ => format!("{mins} mins"),
+    let mins = (secs % 3600) / 60;
+    match (days, hours, mins) {
+        (d, _, _) if d > 0 => format!("{d} days, {hours} hours, {mins} mins"),
+        (0, h, _) if h > 0 => format!("{h} hours, {mins} mins"),
+        (0, 0, m) if m > 0 => format!("{m} mins"),
+        _ => "0 mins".to_string(),
     }
 }
 
@@ -179,6 +254,25 @@ mod tests {
         );
         assert_eq!(format_duration(22 * 3600 + 34 * 60), "22 hours, 34 mins");
         assert_eq!(format_duration(34 * 60), "34 mins");
+    }
+
+    #[test]
+    fn format_duration_boundaries() {
+        // A unit that is exactly zero must not be promoted to 1 by `max(1)`.
+        assert_eq!(format_duration(0), "0 mins");
+        assert_eq!(format_duration(59), "0 mins");
+        assert_eq!(format_duration(3600), "1 hours, 0 mins");
+        assert_eq!(format_duration(3660), "1 hours, 1 mins");
+        assert_eq!(format_duration(86400), "1 days, 0 hours, 0 mins");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sh_output_caps_runaway_output() {
+        // An unbounded producer must be cut off and fail closed, not buffered
+        // into memory. `:` and `printf` are shell builtins, so the loop needs
+        // no external binary.
+        assert_eq!(sh_output("while :; do printf '1234567890'; done"), None);
     }
 
     #[test]

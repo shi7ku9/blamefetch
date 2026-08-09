@@ -187,15 +187,50 @@ fn version_strategy(name: &str) -> Option<VersionStrategy> {
 
 fn shell_version(name: &str, path: &str) -> String {
     match version_strategy(name) {
-        // Only execute `--version` for a path we can run as given. A bare name
-        // (e.g. from the `cmd[0]` fallback or a `$SHELL` value like `bash`)
-        // would resolve through PATH, which may point at a different binary
-        // than the detected ancestor.
-        Some(VersionStrategy::Flag(args)) if path.contains(['/', '\\']) => {
+        // Only execute `--version` for a path we can run as given AND that
+        // still looks like a shell after symlink resolution AND when probing
+        // was not explicitly disabled. A bare name (e.g. from the `cmd[0]`
+        // fallback or a `$SHELL` value like `bash`) would resolve through
+        // PATH, which may point at a different binary than the detected
+        // ancestor.
+        Some(VersionStrategy::Flag(args))
+            if path.contains(['/', '\\'])
+                && !version_probing_disabled(
+                    std::env::var_os("BLAMEFETCH_NO_SHELL_VERSION").as_deref(),
+                )
+                && is_verified_shell_path(path, name) =>
+        {
             flag_version(path, args).unwrap_or_default()
         }
         _ => String::new(),
     }
+}
+
+/// True when `BLAMEFETCH_NO_SHELL_VERSION` is set to a non-empty value other
+/// than "0": version probing is skipped entirely, so a detected shell path is
+/// never executed. For setups where blamefetch runs elevated (via `sudo`, a
+/// service manager, or setuid), this closes the "parent-provided path is
+/// executed" surface completely.
+fn version_probing_disabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Extra gate before executing a detected shell path: resolve symlinks and
+/// re-check that the target's basename still looks like the same shell (it
+/// may carry a version suffix, e.g. `zsh-5.9`). This catches a symlink
+/// *named* like a shell but pointing at an arbitrary file (e.g.
+/// `/usr/bin/bash` -> `/tmp/evil`). It is not a full trust boundary — a
+/// parent can still name a real file `bash` — so the definitive control for
+/// elevated setups is `BLAMEFETCH_NO_SHELL_VERSION`.
+fn is_verified_shell_path(path: &str, name: &str) -> bool {
+    let Ok(target) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    let Some(base) = target.file_name() else {
+        return false;
+    };
+    let stem = shell_stem(&base.to_string_lossy());
+    stem == name || stem.starts_with(name)
 }
 
 /// Runs `<path> <flags>` and parses the version from the first output line.
@@ -233,8 +268,9 @@ mod tests {
     use sysinfo::System;
 
     use super::{
-        detect_running_shell, find_shell_in_chain, is_known_shell_name, parse_shell_version,
-        process_shell_candidates, shell_version, version_strategy,
+        detect_running_shell, find_shell_in_chain, is_known_shell_name, is_verified_shell_path,
+        parse_shell_version, process_shell_candidates, shell_version, version_probing_disabled,
+        version_strategy,
     };
 
     /// Walks a fabricated chain of `(pid, parent, exe)` rows with the pure
@@ -498,6 +534,47 @@ mod tests {
     fn shell_version_unexecutable_path_is_empty() {
         // A real path runs, but a missing binary fails fail-closed.
         assert_eq!(shell_version("zsh", "/nonexistent/blamefetch-zsh"), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_version_symlink_to_non_shell_is_skipped() {
+        // A symlink *named* like a shell but pointing at an arbitrary file
+        // must not be executed for a version probe.
+        let dir = tempfile::tempdir().unwrap();
+        let evil = dir.path().join("evil");
+        std::fs::write(&evil, "#!/bin/sh\n").unwrap();
+        let fake = dir.path().join("zsh");
+        std::os::unix::fs::symlink(&evil, &fake).unwrap();
+        assert_eq!(shell_version("zsh", fake.to_str().unwrap()), "");
+        assert!(!is_verified_shell_path(fake.to_str().unwrap(), "zsh"));
+    }
+
+    #[test]
+    fn verified_shell_path_accepts_regular_file_named_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let sh = dir.path().join("sh");
+        std::fs::write(&sh, "#!/bin/sh\n").unwrap();
+        assert!(is_verified_shell_path(sh.to_str().unwrap(), "sh"));
+    }
+
+    #[test]
+    fn verified_shell_path_accepts_version_suffixed_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let versioned = dir.path().join("zsh-5.9");
+        std::fs::write(&versioned, "#!/bin/sh\n").unwrap();
+        assert!(is_verified_shell_path(versioned.to_str().unwrap(), "zsh"));
+    }
+
+    #[test]
+    fn version_probing_disabled_semantics() {
+        use std::ffi::OsStr;
+        // Unset, empty, and "0" keep probing enabled; any other value disables.
+        assert!(!version_probing_disabled(None));
+        assert!(!version_probing_disabled(Some(OsStr::new(""))));
+        assert!(!version_probing_disabled(Some(OsStr::new("0"))));
+        assert!(version_probing_disabled(Some(OsStr::new("1"))));
+        assert!(version_probing_disabled(Some(OsStr::new("yes"))));
     }
 
     #[test]
