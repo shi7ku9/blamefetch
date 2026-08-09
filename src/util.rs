@@ -9,8 +9,27 @@ use std::sync::{LazyLock, Mutex};
 /// be tens of MB on a very large repository) versus user-config commands,
 /// which are untrusted and must not be able to exhaust memory — `yes` at
 /// ~3 GB/s would otherwise accumulate ~16 GB during a default 5 s timeout.
-const MAX_PROBE_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
+///
+/// The probe tier is sized to fit the largest real repositories: `rev-list`
+/// emits 41-42 bytes per hash, so 1 GiB covers repos up to ~26M commits.
+/// Probes are trusted internal commands, so the cap is a runaway backstop,
+/// not a bound on legitimate output (peak transient memory is about twice
+/// the cap: the buffer plus the final trimmed copy).
+const MAX_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
+/// Cap for user-config commands (see [`MAX_PROBE_OUTPUT_BYTES`]); published
+/// so the cap-kill warning can name the limit.
+pub const MAX_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+/// Result of running a user-supplied command: the trimmed stdout (or `None`
+/// on spawn failure / non-zero exit / non-UTF-8 output / empty output), plus
+/// whether the child was killed for exceeding the output cap. `capped` is set
+/// only when `output` is `None`, so callers can distinguish "the command
+/// produced too much output" from "the command failed" and warn accurately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub output: Option<String>,
+    pub capped: bool,
+}
 
 /// Child processes still running, keyed by PID. Registered while a command is
 /// awaited so that `kill_running_children` can reap a timed-out section's
@@ -24,6 +43,9 @@ static RUNNING_CHILDREN: LazyLock<Mutex<HashSet<u32>>> =
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// Signal number of the interrupt that terminated the run, if any.
+/// Only the Unix interrupt handler writes and reads it; on other platforms
+/// it is intentionally unused (keep clippy -D warnings green there too).
+#[cfg_attr(not(unix), allow(dead_code))]
 static INTERRUPTED: AtomicI32 = AtomicI32::new(0);
 
 /// Installs SIGINT/SIGTERM handlers plus a watcher that kills every tracked
@@ -89,27 +111,38 @@ fn spawn_tracked(program: &str, args: &[&str]) -> Option<Child> {
 /// Waits for a spawned child, keeping it registered while it runs. Returns
 /// trimmed stdout, or `None` on spawn failure / non-zero exit / non-UTF-8
 /// output / output larger than `max_output` bytes (the child is killed in
-/// that case). Empty output is NOT filtered here — callers decide (fail-
-/// closed treats empty as failure).
-fn run_output(mut child: Child, max_output: u64) -> Option<String> {
+/// that case; `capped` is then set). Empty output is NOT filtered here —
+/// callers decide (fail-closed treats empty as failure).
+fn run_output(mut child: Child, max_output: u64) -> CommandOutput {
     let pid = child.id();
 
     // Drain stderr on a helper thread so a chatty child cannot deadlock on a
     // full stderr pipe while we read stdout; the bytes are discarded (never
     // surfaced). The thread unblocks as soon as the child exits or is killed.
     let stderr = child.stderr.take();
-    let stderr_thread = stderr.map(|mut err| {
-        std::thread::spawn(move || {
+    let mut failed = false;
+    let mut capped = false;
+    let stderr_thread = match stderr {
+        Some(mut err) => match std::thread::Builder::new().spawn(move || {
             let mut sink = std::io::sink();
             let _ = std::io::copy(&mut err, &mut sink);
-        })
-    });
+        }) {
+            Ok(thread) => Some(thread),
+            // Cannot drain stderr: fail closed (kill + reap) instead of
+            // risking a deadlock on a full stderr pipe or an orphan.
+            Err(_) => {
+                failed = true;
+                None
+            }
+        },
+        None => None,
+    };
 
     // Read stdout with a hard byte cap. A misbehaving command (e.g. `yes`)
-    // must not be able to exhaust memory: once the cap is hit the whole
-    // process group is killed and the section fails closed.
+    // must not be able to exhaust memory: once the cap is hit the child is
+    // killed (the whole process group on Unix, the direct child via
+    // `Child::kill` on Windows) and the section fails closed.
     let mut stdout = Vec::new();
-    let mut failed = false;
     if let Some(mut pipe) = child.stdout.take() {
         let mut buf = [0u8; 8192];
         loop {
@@ -119,6 +152,7 @@ fn run_output(mut child: Child, max_output: u64) -> Option<String> {
                     let n = n as u64;
                     if stdout.len() as u64 + n > max_output {
                         failed = true;
+                        capped = true;
                         break;
                     }
                     stdout.extend_from_slice(&buf[..n as usize]);
@@ -132,40 +166,58 @@ fn run_output(mut child: Child, max_output: u64) -> Option<String> {
     }
     if failed {
         kill_group(pid);
+        // Portable direct-child kill: the group kill is a no-op on Windows,
+        // and without this `wait()` below would block forever on a runaway
+        // that never exits (on Unix this re-signals a zombie, harmlessly).
+        let _ = child.kill();
     }
     let status = child.wait().ok();
     if let Some(thread) = stderr_thread {
-        let _ = thread.join();
+        // Dropping the handle detaches, not joins: a grandchild that escaped
+        // the killed process group while holding the stderr pipe would
+        // otherwise hang the worker forever (the drain thread ends with the
+        // process). Detaching also lets the registration below run
+        // immediately after `wait()`, so a reaped pid is never left behind
+        // for the end-of-run sweep to kill.
+        drop(thread);
     }
     RUNNING_CHILDREN.lock().unwrap().remove(&pid);
     if failed {
-        return None;
+        return CommandOutput {
+            output: None,
+            capped,
+        };
     }
-    status
-        .filter(|s| s.success())
-        .and_then(|_| String::from_utf8(stdout).ok())
-        .map(|s| s.trim().to_string())
+    CommandOutput {
+        output: status
+            .filter(|s| s.success())
+            .and_then(|_| String::from_utf8(stdout).ok())
+            .map(|s| s.trim().to_string()),
+        capped: false,
+    }
 }
 
 pub fn cmd_output(program: &str, args: &[&str]) -> Option<String> {
-    run_output(spawn_tracked(program, args)?, MAX_PROBE_OUTPUT_BYTES)
+    run_output(spawn_tracked(program, args)?, MAX_PROBE_OUTPUT_BYTES).output
 }
 
 /// Run a user-supplied command through the platform shell so pipes/globs work.
 /// `sh -c` on Unix, `cmd /C` on Windows. Returns trimmed stdout, or `None`
-/// on spawn failure / non-zero exit / non-UTF-8 output / output over the
-/// command cap. Empty output is NOT filtered here — callers decide (fail-
-/// closed treats empty as failure).
-pub fn sh_output(command: &str) -> Option<String> {
+/// on spawn failure / non-zero exit / non-UTF-8 output / empty output, and
+/// sets `capped` when the child was killed for exceeding the command cap.
+pub fn sh_output(command: &str) -> CommandOutput {
     let (program, flag): (&str, &str) = if cfg!(windows) {
         ("cmd", "/C")
     } else {
         ("sh", "-c")
     };
-    run_output(
-        spawn_tracked(program, &[flag, command])?,
-        MAX_COMMAND_OUTPUT_BYTES,
-    )
+    let Some(child) = spawn_tracked(program, &[flag, command]) else {
+        return CommandOutput {
+            output: None,
+            capped: false,
+        };
+    };
+    run_output(child, MAX_COMMAND_OUTPUT_BYTES)
 }
 
 /// True once the run has given up on timed-out sections. Callers use it to
@@ -189,7 +241,9 @@ fn kill_group(pid: u32) {
 
 #[cfg(not(unix))]
 fn kill_group(_pid: u32) {
-    // No portable kill-by-PID from std on Windows.
+    // Killing a whole process group is Unix-only (no portable group-kill from
+    // std); the direct child is killed separately via `Child::kill()`
+    // (TerminateProcess on Windows), which IS portable.
 }
 
 /// Kills every command still running. Call after section resolution: anything
@@ -270,11 +324,14 @@ mod tests {
     #[test]
     fn sh_output_caps_runaway_output() {
         // An unbounded producer must be cut off and fail closed, not buffered
-        // into memory. `:` and `printf` are shell builtins, so the loop needs
-        // no external binary.
-        assert_eq!(sh_output("while :; do printf '1234567890'; done"), None);
+        // into memory, and the cap-kill must be reported as such. `:` and
+        // `printf` are shell builtins, so the loop needs no external binary.
+        let out = sh_output("while :; do printf '1234567890'; done");
+        assert!(out.output.is_none());
+        assert!(out.capped, "a cap-kill must be reported as capped");
     }
 
+    #[cfg(unix)]
     #[test]
     fn cmd_output_success_and_missing() {
         assert_eq!(cmd_output("echo", &["hi"]), Some("hi".to_string()));
@@ -283,15 +340,38 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_output_exact_cap_is_not_capped() {
+        // The cap is strictly greater-than: exactly `max_output` bytes must
+        // succeed. Shell builtins only (`[`, `printf`, arithmetic), so the
+        // test needs no external binary.
+        let cmd = "i=0; while [ $i -lt 103 ]; do printf '1234567890'; i=$((i+1)); done";
+        let child = spawn_tracked("sh", &["-c", cmd]).unwrap();
+        let out = run_output(child, 1030);
+        assert_eq!(out.output.as_ref().map(String::len), Some(1030));
+        assert!(!out.capped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_output_one_byte_over_cap_is_capped() {
+        let cmd = "i=0; while [ $i -lt 103 ]; do printf '1234567890'; i=$((i+1)); done; printf x";
+        let child = spawn_tracked("sh", &["-c", cmd]).unwrap();
+        let out = run_output(child, 1030);
+        assert!(out.output.is_none());
+        assert!(out.capped, "one byte over the cap must be killed as capped");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn sh_output_trims_and_preserves_internal_newlines() {
-        assert_eq!(sh_output("printf 'a\\nb'"), Some("a\nb".to_string()));
+        assert_eq!(sh_output("printf 'a\\nb'").output, Some("a\nb".to_string()));
     }
 
     #[cfg(unix)]
     #[test]
     fn sh_output_supports_pipes() {
         assert_eq!(
-            sh_output("printf 'hello' | tr a-z A-Z"),
+            sh_output("printf 'hello' | tr a-z A-Z").output,
             Some("HELLO".to_string())
         );
     }
@@ -299,18 +379,23 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sh_output_nonzero_exit_is_none() {
-        assert_eq!(sh_output("false"), None);
+        let out = sh_output("false");
+        assert!(out.output.is_none());
+        assert!(!out.capped, "a non-zero exit is a failure, not a cap-kill");
     }
 
     #[cfg(unix)]
     #[test]
     fn sh_output_missing_binary_is_none() {
-        assert_eq!(sh_output("blamefetch-no-such-binary"), None);
+        assert!(sh_output("blamefetch-no-such-binary").output.is_none());
     }
 
     #[cfg(unix)]
     #[test]
     fn sh_output_trims_whitespace() {
-        assert_eq!(sh_output("printf '  padded  '"), Some("padded".to_string()));
+        assert_eq!(
+            sh_output("printf '  padded  '").output,
+            Some("padded".to_string())
+        );
     }
 }

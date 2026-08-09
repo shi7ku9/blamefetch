@@ -93,6 +93,41 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+/// Top-level config keys. The single source of truth shared by the
+/// unknown-key walk and the tolerant per-key parse, so a new field cannot
+/// drift between the two.
+const TOP_LEVEL_KEYS: &[&str] = &["commit", "messages", "sections", "order"];
+
+/// Deserializes one top-level config key with tolerance: a malformed value
+/// drops only that key, with a warning naming the JSON path.
+fn parse_key<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+    label: &str,
+    apply: impl FnOnce(T),
+) {
+    match serde_json::from_value::<T>(v) {
+        Ok(value) => apply(value),
+        Err(e) => eprintln!("blamefetch: warning: ignoring invalid {label:?} entry: {e}"),
+    }
+}
+
+/// Parses the `sections` map with per-entry tolerance: a malformed entry
+/// drops only that entry.
+fn parse_sections(v: serde_json::Value, user: &mut Config) {
+    let serde_json::Value::Object(sections) = v else {
+        eprintln!("blamefetch: warning: ignoring invalid \"sections\" (must be an object)");
+        return;
+    };
+    for (key, entry) in sections {
+        match serde_json::from_value::<SectionEntry>(entry) {
+            Ok(e) => {
+                user.sections.insert(key, e);
+            }
+            Err(e) => eprintln!("blamefetch: warning: ignoring invalid section {key:?}: {e}"),
+        }
+    }
+}
+
 impl Config {
     pub fn load(explicit: Option<&Path>) -> Config {
         let mut cfg: Config = serde_json::from_str(include_str!("default-config.json"))
@@ -112,11 +147,21 @@ impl Config {
         if let Some(path) = path.filter(|p| p.exists()) {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    report_unknown_keys(&text);
-                    match Self::parse_user_config(&text) {
-                        Ok(user) => cfg.merge(user),
+                    // Parse the file exactly once: the unknown-key walk and the
+                    // tolerant per-key parse share the same `Value`.
+                    match serde_json::from_str(&text) {
+                        Ok(value) => {
+                            report_unknown_keys(&value);
+                            match Self::parse_user_value(value) {
+                                Ok(user) => cfg.merge(user),
+                                Err(err) => eprintln!(
+                                    "blamefetch: warning: {err} (in {}); using defaults",
+                                    path.display()
+                                ),
+                            }
+                        }
                         Err(err) => eprintln!(
-                            "blamefetch: warning: {err} (in {}); using defaults",
+                            "blamefetch: warning: failed to parse config: {err} (in {}); using defaults",
                             path.display()
                         ),
                     }
@@ -130,56 +175,32 @@ impl Config {
         cfg
     }
 
-    /// Parses a user config file with per-key tolerance: a malformed
+    /// Parses a user config value with per-key tolerance: a malformed
     /// `sections` entry only drops that entry, and a malformed top-level key
     /// only drops that key — each with a warning naming the JSON path —
     /// instead of discarding the whole file over one typo. Only a JSON syntax
     /// error (or a non-object document) rejects the file outright.
-    fn parse_user_config(text: &str) -> Result<Config, String> {
-        let value: serde_json::Value =
-            serde_json::from_str(text).map_err(|e| format!("failed to parse config: {e}"))?;
-        let Some(obj) = value.as_object() else {
+    fn parse_user_value(value: serde_json::Value) -> Result<Config, String> {
+        let serde_json::Value::Object(mut obj) = value else {
             return Err("config root must be a JSON object".to_string());
         };
         let mut user = Config::default();
 
-        if let Some(v) = obj.get("commit") {
-            match serde_json::from_value::<CommitConfig>(v.clone()) {
-                Ok(c) => user.commit = c,
-                Err(e) => eprintln!("blamefetch: warning: ignoring invalid \"commit\" entry: {e}"),
-            }
-        }
-        if let Some(v) = obj.get("messages") {
-            match serde_json::from_value::<MessagesConfig>(v.clone()) {
-                Ok(m) => user.messages = m,
-                Err(e) => {
-                    eprintln!("blamefetch: warning: ignoring invalid \"messages\" entry: {e}")
-                }
-            }
-        }
-        if let Some(v) = obj.get("order") {
-            match serde_json::from_value::<Vec<String>>(v.clone()) {
-                Ok(o) => user.order = Some(o),
-                Err(e) => eprintln!("blamefetch: warning: ignoring invalid \"order\": {e}"),
-            }
-        }
-        if let Some(v) = obj.get("sections") {
-            match v.as_object() {
-                Some(sections) => {
-                    for (key, entry) in sections {
-                        match serde_json::from_value::<SectionEntry>(entry.clone()) {
-                            Ok(e) => {
-                                user.sections.insert(key.clone(), e);
-                            }
-                            Err(e) => eprintln!(
-                                "blamefetch: warning: ignoring invalid section {key:?}: {e}"
-                            ),
-                        }
-                    }
-                }
-                None => eprintln!(
-                    "blamefetch: warning: ignoring invalid \"sections\" (must be an object)"
-                ),
+        // One dispatch over the shared key table: `obj.remove` hands the
+        // owned value to the parser, so nothing is deep-cloned.
+        for key in TOP_LEVEL_KEYS {
+            let Some(v) = obj.remove(*key) else {
+                continue;
+            };
+            match *key {
+                "commit" => parse_key(v, "commit", |c| user.commit = c),
+                "messages" => parse_key(v, "messages", |m| user.messages = m),
+                // `Option` keeps `"order": null` equivalent to an absent
+                // order (serde's old whole-file behavior), while
+                // `"order": []` stays an explicit empty display list.
+                "order" => parse_key(v, "order", |o| user.order = o),
+                "sections" => parse_sections(v, &mut user),
+                _ => unreachable!("TOP_LEVEL_KEYS is exhaustive"),
             }
         }
         Ok(user)
@@ -267,12 +288,10 @@ fn default_config_path() -> Option<PathBuf> {
 /// Warns about unrecognized keys in a config file. serde's untagged enums
 /// (`SectionEntry`, `FieldValue`) make `deny_unknown_fields` unusable — it
 /// would reject the whole config with a generic error — so a plain value walk
-/// flags each offending key path without failing the parse.
-fn report_unknown_keys(text: &str) {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return; // serde's own parse will report the syntax error
-    };
-    let unknown = unknown_keys(&value);
+/// flags each offending key path without failing the parse. Consumes the
+/// already-parsed `Value`; a JSON syntax error is reported by the caller.
+fn report_unknown_keys(value: &serde_json::Value) {
+    let unknown = unknown_keys(value);
     if !unknown.is_empty() {
         eprintln!(
             "blamefetch: warning: unrecognized config key(s) ignored: {}",
@@ -285,12 +304,7 @@ fn report_unknown_keys(text: &str) {
 /// so the warning is deterministic.
 fn unknown_keys(value: &serde_json::Value) -> Vec<String> {
     let mut out = BTreeSet::new();
-    check_object(
-        Some(value),
-        "",
-        &["commit", "messages", "sections", "order"],
-        &mut out,
-    );
+    check_object(Some(value), "", TOP_LEVEL_KEYS, &mut out);
     check_object(
         value.get("commit"),
         "commit",
@@ -387,6 +401,16 @@ mod tests {
         let missing =
             std::env::temp_dir().join(format!("blamefetch-no-such-{}", std::process::id()));
         Config::load(Some(&missing))
+    }
+
+    /// Loads a config from literal text through a real temp file. The
+    /// `TempDir` is scoped to this helper: it is removed when the helper
+    /// returns (or unwinds on a panic), and tests never share directories.
+    fn load_from(text: &str) -> Config {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, text).unwrap();
+        Config::load(Some(&path))
     }
 
     #[test]
@@ -538,12 +562,7 @@ mod tests {
     fn commit_fields_merge_fieldwise() {
         // Load from a minimal valid JSON config so the developer's real config
         // (~/.config/blamefetch/config.json) cannot leak into the base.
-        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-merge-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.json");
-        std::fs::write(&path, "{}").unwrap();
-        let mut c = Config::load(Some(&path));
-        std::fs::remove_dir_all(&dir).unwrap();
+        let mut c = load_from("{}");
         let user = Config {
             commit: CommitConfig {
                 author_name: Some("A".to_string()),
@@ -563,34 +582,20 @@ mod tests {
 
     #[test]
     fn bad_config_falls_back_to_defaults() {
-        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("bad.json");
-        std::fs::write(&path, "{ this is not json").unwrap();
-        let c = Config::load(Some(&path));
+        let c = load_from("{ this is not json");
         assert!(!c.sections.is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn non_object_config_falls_back_to_defaults() {
-        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-obj-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("array.json");
-        std::fs::write(&path, "[1, 2, 3]").unwrap();
-        let c = Config::load(Some(&path));
+        let c = load_from("[1, 2, 3]");
         assert_eq!(c.sections.len(), canonical_kind_order().len());
         assert!(c.order.is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn bad_section_field_drops_only_that_section() {
-        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-part-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("partial.json");
-        std::fs::write(
-            &path,
+        let c = load_from(
             r#"{
                 "sections": {
                     "broken": { "name": "X", "email": "x@x.com", "fields": {"version": 2} },
@@ -598,9 +603,7 @@ mod tests {
                 },
                 "order": ["fine"]
             }"#,
-        )
-        .unwrap();
-        let c = Config::load(Some(&path));
+        );
         assert!(
             c.sections.contains_key("fine"),
             "an unrelated valid section must survive one bad entry"
@@ -610,26 +613,45 @@ mod tests {
             "the malformed section must be dropped, not the whole file"
         );
         assert_eq!(c.order.as_deref(), Some(&["fine".to_string()][..]));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn bad_order_dropped_but_sections_kept() {
-        let dir = std::env::temp_dir().join(format!("blamefetch-cfg-ord-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("order.json");
-        std::fs::write(
-            &path,
-            r#"{"sections": {"a": "hi"}, "order": {"not": "an array"}}"#,
-        )
-        .unwrap();
-        let c = Config::load(Some(&path));
+        let c = load_from(r#"{"sections": {"a": "hi"}, "order": {"not": "an array"}}"#);
         assert!(matches!(c.sections.get("a"), Some(SectionEntry::TextLine(s)) if s == "hi"));
         assert!(
             c.order.is_none(),
             "invalid order must be dropped, sections kept"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn null_order_behaves_like_absent() {
+        // `"order": null` used to warn spuriously; it must load cleanly and
+        // behave exactly like an absent order (derived display order).
+        let c = load_from(r#"{"sections": {"a": "hi"}, "order": null}"#);
+        assert!(matches!(c.sections.get("a"), Some(SectionEntry::TextLine(s)) if s == "hi"));
+        assert!(
+            c.order.is_none(),
+            "null order must behave like an absent order"
+        );
+        // The derived display order must be identical to an absent order:
+        // built-ins in canonical order, then custom keys alphabetically.
+        let c_absent = load_from(r#"{"sections": {"a": "hi"}}"#);
+        let keys_null: Vec<String> = c.ordered_sections().into_iter().map(|(k, _)| k).collect();
+        let keys_absent: Vec<String> = c_absent
+            .ordered_sections()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys_null, keys_absent);
+    }
+
+    #[test]
+    fn empty_order_is_explicit_empty_list() {
+        // Unlike null, an empty array is an explicit "render nothing" list.
+        let c = load_from(r#"{"sections": {"a": "hi"}, "order": []}"#);
+        assert_eq!(c.order, Some(vec![]));
     }
 
     #[test]

@@ -20,7 +20,7 @@ use sysinfo::System;
 
 use crate::config::{CoAuthorConfig, FieldValue, TextField};
 use crate::template::{collapse_whitespace, render};
-use crate::util::sh_output;
+use crate::util::{CommandOutput, sh_output};
 
 pub struct CoAuthor {
     pub name: String,
@@ -48,13 +48,14 @@ impl SourceContext {
             username: whoami::username().unwrap_or_default(),
             // `vars_os()` + lossy, not `vars()`: a non-UTF-8 variable (set by
             // a terminal, CI, a service manager, ...) must degrade to the
-            // replacement character instead of panicking the whole run.
+            // replacement character instead of panicking the whole run. Keys
+            // must be valid UTF-8 — templates can only reference such keys —
+            // so a malformed key is dropped rather than lossy-colliding with
+            // a legitimate one.
             env: std::env::vars_os()
-                .map(|(k, v)| {
-                    (
-                        k.to_string_lossy().into_owned(),
-                        v.to_string_lossy().into_owned(),
-                    )
+                .filter_map(|(k, v)| {
+                    let key = k.to_str()?;
+                    Some((key.to_string(), v.to_string_lossy().into_owned()))
                 })
                 .collect(),
         }
@@ -95,10 +96,13 @@ pub fn all_sources() -> Vec<&'static dyn Source> {
 /// raw command string. Thread-safe: the map lock is held only for the lookup
 /// and insertion (microseconds), so distinct commands execute concurrently;
 /// identical commands dedupe through the shared `OnceLock`. Empty/trimmed
-/// output and any failure resolve to `None`.
+/// output and any failure resolve to `output: None`; a cap-kill is memoized
+/// with its `capped` flag so every section using the command is told the
+/// real reason it failed (re-running a cap-killed command would only produce
+/// the same cap-kill).
 #[derive(Default)]
 pub struct CommandCache {
-    results: Mutex<HashMap<String, Arc<OnceLock<Option<String>>>>>,
+    results: Mutex<HashMap<String, Arc<OnceLock<CommandOutput>>>>,
 }
 
 impl CommandCache {
@@ -106,7 +110,7 @@ impl CommandCache {
         Self::default()
     }
 
-    pub fn resolve(&self, command: &str) -> Option<String> {
+    pub fn resolve(&self, command: &str) -> CommandOutput {
         let slot = self
             .results
             .lock()
@@ -114,8 +118,14 @@ impl CommandCache {
             .entry(command.to_string())
             .or_insert_with(|| Arc::new(OnceLock::new()))
             .clone();
-        slot.get_or_init(|| sh_output(command).filter(|s| !s.is_empty()))
-            .clone()
+        slot.get_or_init(|| {
+            let out = sh_output(command);
+            CommandOutput {
+                output: out.output.filter(|s| !s.is_empty()),
+                capped: out.capped,
+            }
+        })
+        .clone()
     }
 }
 
@@ -195,22 +205,33 @@ pub fn render_text(tf: &TextField, cache: &CommandCache) -> Option<String> {
 fn resolve_command(fv: &FieldValue, cache: &CommandCache) -> Option<String> {
     match fv {
         FieldValue::Value(_) => None,
-        FieldValue::Command { command, fallback } => match cache.resolve(command) {
-            Some(out) => Some(collapse_whitespace(&out)),
-            None => match fallback {
-                Some(f) => Some(collapse_whitespace(f)),
-                None => {
-                    // A command killed by the section timeout is not a config
-                    // failure; the timeout warning already covers it.
-                    if !crate::util::is_cancelled() {
-                        eprintln!(
-                            "blamefetch: warning: command failed and no fallback: {command:?}; skipping section"
-                        );
+        FieldValue::Command { command, fallback } => {
+            let out = cache.resolve(command);
+            match out.output {
+                Some(text) => Some(collapse_whitespace(&text)),
+                None => match fallback {
+                    Some(f) => Some(collapse_whitespace(f)),
+                    None => {
+                        // A command killed by the section timeout or by the
+                        // output cap is not an ordinary config failure; the
+                        // timeout warning (or the cap warning below) covers it.
+                        if !crate::util::is_cancelled() {
+                            if out.capped {
+                                eprintln!(
+                                    "blamefetch: warning: command {command:?} output exceeded {} MiB; skipping section",
+                                    crate::util::MAX_COMMAND_OUTPUT_BYTES / (1024 * 1024)
+                                );
+                            } else {
+                                eprintln!(
+                                    "blamefetch: warning: command failed and no fallback: {command:?}; skipping section"
+                                );
+                            }
+                        }
+                        None
                     }
-                    None
-                }
-            },
-        },
+                },
+            }
+        }
     }
 }
 
@@ -573,9 +594,8 @@ mod co_author_test {
     #[cfg(unix)]
     #[test]
     fn same_command_cached_across_fields() {
-        let dir = std::env::temp_dir().join(format!("blamefetch-cache-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("count");
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("count");
         let cmd = format!("printf x | tee -a {}", marker.display());
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -607,7 +627,69 @@ mod co_author_test {
             count, 1,
             "identical command must run exactly once per invocation"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_over_output_cap_uses_fallback() {
+        // A command killed by the output cap is a failure like any other:
+        // a fallback must still be used (only the no-fallback warning differs).
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "version".to_string(),
+            FieldValue::Command {
+                command: "while :; do printf '1234567890'; done".to_string(),
+                fallback: Some("unknown".to_string()),
+            },
+        );
+        let cfg = entry(
+            Some(FieldValue::Value("Bot {version}".to_string())),
+            Some(FieldValue::Value("bot@x.com".to_string())),
+            fields,
+        );
+        let cache = CommandCache::new();
+        let ca = render_co_author(&cfg, "bot", &ctx(), &cache).unwrap();
+        assert_eq!(ca.name, "Bot unknown");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_command_reports_cap() {
+        // A cap-killed command must be memoized WITH its capped flag, so a
+        // later section using the same command gets the accurate reason
+        // (and the runaway is not re-run per section).
+        let cache = CommandCache::new();
+        let out = cache.resolve("while :; do printf '1234567890'; done");
+        assert!(out.output.is_none());
+        assert!(out.capped);
+        let again = cache.resolve("while :; do printf '1234567890'; done");
+        assert_eq!(out, again);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cached_cap_killed_command_runs_once() {
+        // The marker file proves the cap-killed command body ran exactly
+        // once: a second resolve must reuse the memoized result instead of
+        // re-running (and re-capping) the runaway.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("count");
+        let cmd = format!(
+            "printf x >> {}; while :; do printf '1234567890'; done",
+            marker.display()
+        );
+        let cache = CommandCache::new();
+        let out = cache.resolve(&cmd);
+        assert!(out.output.is_none());
+        assert!(out.capped);
+        let again = cache.resolve(&cmd);
+        assert_eq!(out, again);
+        let count = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            count.len(),
+            1,
+            "cap-killed command must not be re-run per section"
+        );
     }
 
     #[cfg(unix)]

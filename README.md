@@ -141,7 +141,16 @@ platform's config directory).
   `name`/`email`/`fields`), or a plain text line (string value; an object with
   a `text` key also supports `{placeholder}` fields).
 - `order` — the exact display list: only listed sections render, in listed
-  order; sections omitted from `order` are not shown.
+  order; sections omitted from `order` are not shown. `"order": null` is
+  equivalent to an absent `order`; `"order": []` is an explicit empty list.
+- Tolerance — a malformed key or section is dropped one at a time with a
+  warning while the rest of the config still applies (including any
+  commands in the valid parts). Only a JSON syntax error or a non-object
+  document falls back to the defaults entirely.
+- Standard input — config commands (`{ "command": ... }` values in
+  `name`/`email`/`fields`) run with stdin closed: a command that reads stdin
+  gets immediate EOF, so piping input into blamefetch never feeds a config
+  command.
 
 A configuration producing the sample output above is included at
 [example/config.json](example/config.json). It declares only the roster
@@ -198,11 +207,11 @@ permissions — normally the invoking user's. If you run blamefetch with
 elevated privileges (e.g. via `sudo` or as a service), those commands run
 with the elevated privileges, and the shell probe may execute a path chosen
 by a lower-privileged ancestor process. The probe refuses symlink targets
-whose name no longer looks like a shell, and it can be disabled entirely by
-setting `BLAMEFETCH_NO_SHELL_VERSION=1` (any non-empty value other than
-`0`), in which case no detected shell path is ever executed. Do not run
-blamefetch with elevated privileges unless you also trust the config and
-the shell environment it detects.
+whose resolved name no longer matches the detected shell — exactly, or as
+a digit-led variant such as `zsh5` or `zsh-5.9` — and it can be disabled
+entirely by setting `BLAMEFETCH_NO_SHELL_VERSION=1` (any non-empty value
+other than `0`), in which case no detected shell path is ever executed. Do not run blamefetch with elevated privileges unless you also
+trust the config and the shell environment it detects.
 
 Only run config files you trust. You are responsible for reviewing any
 configuration — including any commands inside it — before running blamefetch.

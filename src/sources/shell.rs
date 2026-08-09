@@ -28,11 +28,9 @@ impl Source for Shell {
             .or_else(|| ctx.env("SHELL"))
             .filter(|p| !p.is_empty())?;
         // Normalize for display and version lookup: strip a Windows `.exe`
-        // suffix and lowercase, so `bash.exe` and `bash` behave identically.
-        let name = shell_stem(&Path::new(&path).file_name()?.to_string_lossy());
-        if name.is_empty() {
-            return None;
-        }
+        // suffix, lowercase, and drop a digit-led version suffix, so
+        // `bash.exe`, `zsh5` and `zsh` all behave as `bash`/`zsh`.
+        let name = strip_version_suffix(&path_stem(&path)?).to_string();
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), name.clone());
         fields.insert("version".to_string(), shell_version(&name, &path));
@@ -84,9 +82,43 @@ fn shell_stem(name: &str) -> String {
     stem.strip_prefix('-').unwrap_or(stem).to_string()
 }
 
-/// True when `name` is a known shell basename (normalized via [`shell_stem`]).
+/// Strips a trailing digit-led version suffix from a normalized shell name:
+/// `zsh5` → `zsh`, `zsh-5.9` → `zsh`, `zsh-5.9-devel` → `zsh`. Names without
+/// a digit-led tail (`zshrc`, `bash-static`, `busybox`) are returned
+/// unchanged. This is what makes versioned distro binaries (Debian's
+/// `/usr/bin/zsh` → `zsh5`) match the same detection/strategy entries as
+/// their unversioned name.
+fn strip_version_suffix(name: &str) -> &str {
+    for (i, c) in name.char_indices() {
+        if c.is_ascii_digit() && i > 0 {
+            // Cut at the preceding separator when there is one
+            // (`zsh-5.9` → `zsh`), else at the digit itself (`zsh5` → `zsh`).
+            let cut = if matches!(name.as_bytes()[i - 1], b'-' | b'.') {
+                i - 1
+            } else {
+                i
+            };
+            return &name[..cut];
+        }
+    }
+    name
+}
+
+/// Basename of a path normalized via [`shell_stem`], or `None` when the path
+/// has no usable basename. Splits on both separators (not `Path::file_name`,
+/// which on Unix treats `\` as an ordinary character and would return the
+/// whole of a Windows-style path as the "file name").
+fn path_stem(path: &str) -> Option<String> {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let stem = shell_stem(base);
+    if stem.is_empty() { None } else { Some(stem) }
+}
+
+/// True when `name` is a known shell basename (normalized via [`shell_stem`]
+/// with any version suffix stripped, so `zsh5` matches like `zsh`).
 fn is_known_shell_name(name: &str) -> bool {
-    KNOWN_SHELLS.contains(&shell_stem(name).as_str())
+    let stem = shell_stem(name);
+    KNOWN_SHELLS.contains(&strip_version_suffix(&stem))
 }
 
 /// Walks the parent-process chain starting at `own_pid` and returns the
@@ -174,10 +206,12 @@ enum VersionStrategy {
 }
 
 /// Picks a version-reading strategy for a shell by name (normalized via
-/// [`shell_stem`], so `bash.exe` is treated like `bash`). Shells outside the
-/// table get no version (the name is still reported) and nothing is executed.
+/// [`shell_stem`] with the version suffix stripped, so `bash.exe` and
+/// `zsh5` are treated like `bash` and `zsh`). Shells outside the table get
+/// no version (the name is still reported) and nothing is executed.
 fn version_strategy(name: &str) -> Option<VersionStrategy> {
-    match shell_stem(name).as_str() {
+    let stem = shell_stem(name);
+    match strip_version_suffix(&stem) {
         "bash" | "zsh" | "fish" | "nu" | "elvish" | "xonsh" | "pwsh" => {
             Some(VersionStrategy::Flag(&["--version"]))
         }
@@ -216,21 +250,31 @@ fn version_probing_disabled(value: Option<&std::ffi::OsStr>) -> bool {
 }
 
 /// Extra gate before executing a detected shell path: resolve symlinks and
-/// re-check that the target's basename still looks like the same shell (it
-/// may carry a version suffix, e.g. `zsh-5.9`). This catches a symlink
-/// *named* like a shell but pointing at an arbitrary file (e.g.
-/// `/usr/bin/bash` -> `/tmp/evil`). It is not a full trust boundary — a
-/// parent can still name a real file `bash` — so the definitive control for
-/// elevated setups is `BLAMEFETCH_NO_SHELL_VERSION`.
+/// re-check that the target's basename still names the same shell — exactly
+/// (`bash`), or as a version-suffixed variant (`zsh-5.9`, or Debian's
+/// `zsh` -> `zsh5`). This catches a symlink *named* like a shell but pointing
+/// at an arbitrary file (e.g. `/usr/bin/bash` -> `/tmp/evil/bash-backdoor`).
+/// It is not a full trust boundary — a parent can still name a real file
+/// `bash` — so the definitive control for elevated setups is
+/// `BLAMEFETCH_NO_SHELL_VERSION`.
 fn is_verified_shell_path(path: &str, name: &str) -> bool {
     let Ok(target) = std::fs::canonicalize(path) else {
         return false;
     };
-    let Some(base) = target.file_name() else {
+    let Some(stem) = path_stem(&target.to_string_lossy()) else {
         return false;
     };
-    let stem = shell_stem(&base.to_string_lossy());
-    stem == name || stem.starts_with(name)
+    // A version suffix is a digit-led run after the name, with or without a
+    // dash: `zsh5` and `zsh-5.9` are legitimate versioned binaries,
+    // `bash-backdoor` and `zshrc` are not.
+    stem == name
+        || stem.strip_prefix(name).is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix
+                    .strip_prefix('-')
+                    .unwrap_or(suffix)
+                    .starts_with(|c: char| c.is_ascii_digit())
+        })
 }
 
 /// Runs `<path> <flags>` and parses the version from the first output line.
@@ -269,8 +313,8 @@ mod tests {
 
     use super::{
         detect_running_shell, find_shell_in_chain, is_known_shell_name, is_verified_shell_path,
-        parse_shell_version, process_shell_candidates, shell_version, version_probing_disabled,
-        version_strategy,
+        parse_shell_version, path_stem, process_shell_candidates, shell_version,
+        strip_version_suffix, version_probing_disabled, version_strategy,
     };
 
     /// Walks a fabricated chain of `(pid, parent, exe)` rows with the pure
@@ -460,12 +504,31 @@ mod tests {
         for name in [
             "zsh", "bash", "rbash", "yash", "dash", "-zsh", "-bash", "cmd.exe", "pwsh.exe",
             "PWSH.EXE",
+            // Version-suffixed distro binaries (Debian's zsh → zsh5) match
+            // their unversioned name.
+            "zsh5", "zsh-5.9", "bash5",
         ] {
             assert!(is_known_shell_name(name), "{name} should be a shell");
         }
-        for name in ["cargo", "blamefetch", "tmux"] {
+        for name in ["cargo", "blamefetch", "tmux", "zshrc", "bash-static"] {
             assert!(!is_known_shell_name(name), "{name} should not be a shell");
         }
+    }
+
+    #[test]
+    fn strip_version_suffix_cases() {
+        assert_eq!(strip_version_suffix("zsh"), "zsh");
+        assert_eq!(strip_version_suffix("zsh5"), "zsh");
+        assert_eq!(strip_version_suffix("zsh-5.9"), "zsh");
+        assert_eq!(strip_version_suffix("zsh-5.9-devel"), "zsh");
+        assert_eq!(strip_version_suffix("bash5-evil"), "bash");
+        assert_eq!(strip_version_suffix("zsh.5.9"), "zsh");
+        assert_eq!(strip_version_suffix("zshrc"), "zshrc");
+        assert_eq!(strip_version_suffix("bash-static"), "bash-static");
+        assert_eq!(strip_version_suffix("busybox"), "busybox");
+        assert_eq!(strip_version_suffix("ksh93"), "ksh");
+        assert_eq!(strip_version_suffix("sh"), "sh");
+        assert_eq!(strip_version_suffix(""), "");
     }
 
     #[test]
@@ -515,7 +578,8 @@ mod tests {
     fn version_strategy_known_shells() {
         for name in [
             "bash", "zsh", "fish", "nu", "elvish", "xonsh", "pwsh", "bash.exe", "BASH.EXE",
-            "PWSH.EXE",
+            "PWSH.EXE", // Version-suffixed names resolve to the same strategy.
+            "zsh5", "zsh-5.9", "bash5",
         ] {
             assert!(
                 version_strategy(name).is_some(),
@@ -539,15 +603,36 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shell_version_symlink_to_non_shell_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
         // A symlink *named* like a shell but pointing at an arbitrary file
-        // must not be executed for a version probe.
+        // must not be executed for a version probe. The payload is
+        // executable and prints a parseable version, so only the symlink
+        // gate — not a permission error — can produce the empty version.
         let dir = tempfile::tempdir().unwrap();
         let evil = dir.path().join("evil");
-        std::fs::write(&evil, "#!/bin/sh\n").unwrap();
+        std::fs::write(&evil, "#!/bin/sh\necho zsh 5.9.1\n").unwrap();
+        std::fs::set_permissions(&evil, std::fs::Permissions::from_mode(0o755)).unwrap();
         let fake = dir.path().join("zsh");
         std::os::unix::fs::symlink(&evil, &fake).unwrap();
         assert_eq!(shell_version("zsh", fake.to_str().unwrap()), "");
         assert!(!is_verified_shell_path(fake.to_str().unwrap(), "zsh"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_version_prefix_named_target_is_skipped() {
+        use std::os::unix::fs::PermissionsExt;
+        // A payload merely *prefixed* with the shell name (`bash-backdoor`)
+        // must not pass the gate either: only an exact name or a digit-led
+        // version suffix is accepted.
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("bash-backdoor");
+        std::fs::write(&payload, "#!/bin/sh\necho bash 5.3.9\n").unwrap();
+        std::fs::set_permissions(&payload, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let fake = dir.path().join("bash");
+        std::os::unix::fs::symlink(&payload, &fake).unwrap();
+        assert_eq!(shell_version("bash", fake.to_str().unwrap()), "");
+        assert!(!is_verified_shell_path(fake.to_str().unwrap(), "bash"));
     }
 
     #[test]
@@ -564,6 +649,39 @@ mod tests {
         let versioned = dir.path().join("zsh-5.9");
         std::fs::write(&versioned, "#!/bin/sh\n").unwrap();
         assert!(is_verified_shell_path(versioned.to_str().unwrap(), "zsh"));
+    }
+
+    #[test]
+    fn verified_shell_path_accepts_digit_suffixed_target() {
+        // Debian ships zsh as /usr/bin/zsh -> zsh5 (no dash).
+        let dir = tempfile::tempdir().unwrap();
+        let versioned = dir.path().join("zsh5");
+        std::fs::write(&versioned, "#!/bin/sh\n").unwrap();
+        assert!(is_verified_shell_path(versioned.to_str().unwrap(), "zsh"));
+    }
+
+    #[test]
+    fn verified_shell_path_rejects_rc_suffix() {
+        // `zshrc` is not a versioned binary: a suffix that is not digit-led
+        // must fail the gate even though it starts with the shell name.
+        let dir = tempfile::tempdir().unwrap();
+        let zshrc = dir.path().join("zshrc");
+        std::fs::write(&zshrc, "#!/bin/sh\n").unwrap();
+        assert!(!is_verified_shell_path(zshrc.to_str().unwrap(), "zsh"));
+    }
+
+    #[test]
+    fn path_stem_normalizes_both_separators() {
+        assert_eq!(path_stem("/usr/bin/zsh").as_deref(), Some("zsh"));
+        assert_eq!(
+            path_stem("C:\\Program Files\\PowerShell\\7\\pwsh.exe").as_deref(),
+            Some("pwsh"),
+            "Windows-style paths must split on backslash even on Unix"
+        );
+        assert_eq!(path_stem("bash").as_deref(), Some("bash"));
+        assert_eq!(path_stem(""), None);
+        assert_eq!(path_stem("/"), None);
+        assert_eq!(path_stem("-"), None);
     }
 
     #[test]
