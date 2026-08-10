@@ -7,3 +7,6 @@
 
 # maybe neovim
 nvim.log
+
+# git worktrees
+/.worktrees
