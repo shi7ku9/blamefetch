@@ -35,7 +35,7 @@ pub struct Cli {
     #[arg(long)]
     pub email: Option<String>,
 
-    /// Colorize the output.
+    /// Force colored output, even when stdout is not a terminal or NO_COLOR is set.
     #[arg(long)]
     pub color: bool,
 

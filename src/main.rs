@@ -268,6 +268,11 @@ fn main() -> ExitCode {
     util::kill_running_children();
 
     let opts = render::RenderOptions { color: cli.color };
+    if cli.color {
+        // The explicit flag wins over stdout TTY detection, NO_COLOR, and
+        // CLICOLOR*: the user asked for color, so colorize.
+        colored::control::set_override(true);
+    }
     print!("{}", render::render_commit(&git_data, &body_items, &opts));
     ExitCode::SUCCESS
 }

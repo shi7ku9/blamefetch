@@ -19,8 +19,8 @@ pub fn render_commit(git: &GitData, items: &[BodyItem], opts: &RenderOptions) ->
     out.push_str(&format!(
         "{}: {} <{}>\n",
         word("Author", opts.color),
-        git.author_name.as_deref().unwrap_or_default(),
-        git.author_email.as_deref().unwrap_or_default()
+        sanitize_terminal_text(git.author_name.as_deref().unwrap_or_default()),
+        sanitize_terminal_text(git.author_email.as_deref().unwrap_or_default())
     ));
     if let Some(date) = &git.date {
         // Three spaces after the colon, like git: the label column is padded to
@@ -33,7 +33,7 @@ pub fn render_commit(git: &GitData, items: &[BodyItem], opts: &RenderOptions) ->
     // spaces to match git's rendering of a commit message.
     let mut body = String::new();
     if !git.message.is_empty() {
-        body.push_str(git.message.trim_end());
+        body.push_str(&sanitize_terminal_text(git.message.trim_end()));
         body.push('\n');
         body.push('\n');
     }
@@ -58,6 +58,17 @@ pub fn render_commit(git: &GitData, items: &[BodyItem], opts: &RenderOptions) ->
     }
 
     out
+}
+
+/// Strips terminal control bytes (C0 controls and DEL, per `char::is_control`)
+/// from text that will be printed, keeping `\n` and `\t` so multi-line commit
+/// messages and indentation survive. Without the ESC leader, CSI/OSC
+/// sequences degrade to inert visible text, so a crafted commit message
+/// cannot drive the terminal.
+fn sanitize_terminal_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
 }
 
 fn word(s: &str, color: bool) -> String {
@@ -171,5 +182,61 @@ mod tests {
             *lines.last().unwrap(),
             "    Co-Authored-By: NixOS 26.11 <os@system.invalid>"
         );
+    }
+
+    /// No control bytes other than `\n`/`\t` may survive rendering — ESC is
+    /// the leader of every CSI/OSC sequence, so stripping it is sufficient to
+    /// neuter terminal injection; BEL (OSC terminator) must go too.
+    fn assert_no_terminal_controls(out: &str) {
+        assert!(
+            out.chars()
+                .all(|c| !c.is_control() || c == '\n' || c == '\t'),
+            "control bytes must be stripped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn strips_escape_sequences_from_commit_message() {
+        // OSC title-set, BEL, clear-screen, and color CSI sequences: all must
+        // be stripped so a crafted commit cannot drive the terminal.
+        let g = GitData {
+            message: "feat: \x1b]0;EVIL-TITLE\x07\x1b[2J\x1b[31mRED\x1b[0m".to_string(),
+            ..git()
+        };
+        let out = render_commit(&g, &[], &opts());
+        assert_no_terminal_controls(&out);
+        assert!(out.contains("RED"), "visible message text is preserved");
+    }
+
+    #[test]
+    fn strips_escape_sequences_from_author_fields() {
+        let g = GitData {
+            author_name: Some("Ann\x1b[31m".to_string()),
+            author_email: Some("ann@x.com\x1b]0;EVIL\x07".to_string()),
+            ..git()
+        };
+        let out = render_commit(&g, &[], &opts());
+        assert_no_terminal_controls(&out);
+        assert!(out.contains("Author: Ann"), "author name text is preserved");
+        assert!(
+            out.contains("ann@x.com"),
+            "author email text is preserved: {out:?}"
+        );
+    }
+
+    #[test]
+    fn preserves_newlines_and_tabs_in_message() {
+        // Sanitization must not flatten multi-line messages or indentation.
+        let g = GitData {
+            message: "line one\n\tindented\nline three".to_string(),
+            ..git()
+        };
+        let out = render_commit(&g, &[], &opts());
+        assert!(out.contains("    line one"));
+        assert!(
+            out.contains("    \tindented"),
+            "tab must survive sanitization: {out:?}"
+        );
+        assert!(out.contains("    line three"));
     }
 }
