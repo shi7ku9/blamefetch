@@ -1308,9 +1308,12 @@ fn commit_message_escape_sequences_are_stripped() {
         .output()
         .unwrap();
     assert!(out.status.success());
+    // No control byte may reach stdout except the structural newlines/tabs.
     assert!(
-        !out.stdout.contains(&b'\x1b'),
-        "ESC bytes from a crafted commit message must be stripped from output"
+        out.stdout
+            .iter()
+            .all(|b| !b.is_ascii_control() || *b == b'\n' || *b == b'\t'),
+        "control bytes from a crafted commit message must be stripped from output"
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(

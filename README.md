@@ -28,7 +28,7 @@ It never creates or modifies commits. It just prints.
   repository's history is unchanged. Other parts of the output (system info,
   and the `Date:` line when it is generated) still vary.
 - Optional colored output with `--color` — the flag forces color even
-  when stdout is not a terminal or `NO_COLOR` is set.
+  when stdout is not a terminal or `NO_COLOR`/`CLICOLOR*` are set.
 - Sections resolve concurrently, each with a per-section timeout (default
   5 s, overridable via `BLAMEFETCH_SECTION_TIMEOUT_MS`); a section that hangs
   is skipped with a warning instead of stalling the whole run.

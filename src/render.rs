@@ -42,11 +42,11 @@ pub fn render_commit(git: &GitData, items: &[BodyItem], opts: &RenderOptions) ->
             BodyItem::Trailer(ca) => body.push_str(&format!(
                 "{}: {} <{}>\n",
                 word("Co-Authored-By", opts.color),
-                ca.name,
-                ca.email
+                sanitize_terminal_text(&ca.name),
+                sanitize_terminal_text(&ca.email)
             )),
             BodyItem::Text(line) => {
-                body.push_str(line);
+                body.push_str(&sanitize_terminal_text(line));
                 body.push('\n');
             }
         }
@@ -222,6 +222,25 @@ mod tests {
             out.contains("ann@x.com"),
             "author email text is preserved: {out:?}"
         );
+    }
+
+    #[test]
+    fn strips_escape_sequences_from_trailer_fields() {
+        // Env-derived values (LANG, TERM, XDG_CURRENT_DESKTOP, ...) flow into
+        // co-author trailers; they must be sanitized like commit data.
+        let items = vec![trailer("En\x1b[31mUs", "en@x\x1b]0;EVIL\x07.com")];
+        let out = render_commit(&git(), &items, &opts());
+        assert_no_terminal_controls(&out);
+        assert!(out.contains("En"), "trailer name text is preserved");
+        assert!(out.contains("en@x"), "trailer email text is preserved");
+    }
+
+    #[test]
+    fn strips_escape_sequences_from_text_lines() {
+        let items = vec![BodyItem::Text("\x1b[2Jbot line\x1b[0m".to_string())];
+        let out = render_commit(&git(), &items, &opts());
+        assert_no_terminal_controls(&out);
+        assert!(out.contains("bot line"), "text line content is preserved");
     }
 
     #[test]
