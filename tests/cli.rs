@@ -1232,3 +1232,92 @@ fn utf8_config_print_config_preserves_chinese_and_japanese() {
         "feat: 我是貓娘，搖著尾巴參上喵！"
     );
 }
+
+#[test]
+fn color_flag_forces_ansi_when_piped() {
+    let repo = make_repo();
+    let minimal = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal.json");
+    // Clean color env: without the fix, `colored` suppresses ANSI for a
+    // non-TTY stdout, so the explicit --color flag must still force it.
+    let out = bin()
+        .arg("--no-git")
+        .arg("--seed")
+        .arg("42")
+        .arg("--config")
+        .arg(&minimal)
+        .arg("--color")
+        .current_dir(repo.path())
+        .env_remove("NO_COLOR")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stdout.windows(2).any(|w| w == b"\x1b["),
+        "--color must emit ANSI escapes even when stdout is piped"
+    );
+}
+
+#[test]
+fn color_flag_wins_over_no_color_env() {
+    let repo = make_repo();
+    let minimal = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal.json");
+    let out = bin()
+        .arg("--no-git")
+        .arg("--seed")
+        .arg("42")
+        .arg("--config")
+        .arg(&minimal)
+        .arg("--color")
+        .current_dir(repo.path())
+        .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stdout.windows(2).any(|w| w == b"\x1b["),
+        "explicit --color must win over NO_COLOR"
+    );
+}
+
+/// A crafted commit whose message contains raw terminal escape sequences must
+/// not reach stdout: blamefetch renders commit data verbatim, so without
+/// sanitization ESC bytes (title-set, clear-screen, color) are emitted.
+#[test]
+fn commit_message_escape_sequences_are_stripped() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.name", "Test User"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    git(dir.path(), &["add", "."]);
+    let evil = "\x1b]0;EVIL-TITLE\x07\x1b[2J\x1b[31mRED ESCAPES\x1b[0m";
+    git(
+        dir.path(),
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", evil],
+    );
+    let hash = String::from_utf8(git(dir.path(), &["rev-parse", "HEAD"]).stdout).unwrap();
+    let hash = hash.trim().to_string();
+    let out = bin()
+        .arg("--commit")
+        .arg(&hash)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    // No control byte may reach stdout except the structural newlines/tabs.
+    assert!(
+        out.stdout
+            .iter()
+            .all(|b| !b.is_ascii_control() || *b == b'\n' || *b == b'\t'),
+        "control bytes from a crafted commit message must be stripped from output"
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("RED ESCAPES"),
+        "visible message text must be preserved:\n{stdout}"
+    );
+}
