@@ -11,7 +11,7 @@ the [README](../README.md).
 ## Anatomy of a section
 
 Every line that blamefetch prints under the commit message is a **section**.
-All sections live in one JSON object, keyed by name — the key is the section's
+All sections live in one JSON object, keyed by name. The key is the section's
 identity, so it is never repeated:
 
 - A **string value** is a text line, printed verbatim; `""` renders a blank
@@ -52,7 +52,7 @@ canonical order (`os`, `kernel`, `host`, `hostname`, `user`, `shell`,
 `terminal`, `wm`, `uptime`, `cpu`, `gpu`, `memory`, `disk`, `locale`), then any
 other keys alphabetically.
 
-Unrecognized keys at any level — a typo such as `naem` or `sectionss` — are
+Unrecognized keys at any level (a typo such as `naem` or `sectionss`) are
 ignored (serde cannot reject them inside the flexible section shapes), and
 blamefetch prints one warning listing every offending dotted path:
 
@@ -66,10 +66,10 @@ The config still loads; fix the typo to make the warning go away.
 
 Each co-author section has:
 
-- `enabled` — default `true`; set to `false` to disable a section.
-- `name` / `email` — a plain string with `{placeholder}` templates, or a
+- `enabled`: default `true`; set to `false` to disable a section.
+- `name` / `email`: a plain string with `{placeholder}` templates, or a
   `{ "command": "...", "fallback": "..." }` value.
-- `fields` — an object that fills placeholders; each value is a plain string or
+- `fields`: an object that fills placeholders; each value is a plain string or
   a command.
 
 The section key doubles as the co-author's `kind`: a built-in key such as `os`
@@ -81,12 +81,13 @@ Rules to remember:
 - Config `fields` override values from a built-in source.
 - A command that fails without a `fallback` skips the whole section
   (fail-closed); with a `fallback`, the fallback is used instead.
-- An empty resulting `name` or `email` skips the trailer.
+- If `name` or `email` ends up empty, the trailer is skipped.
 - A config-only section without `name` and `email` is skipped.
-- Commands run through `sh -c` on Unix and `cmd /C` on Windows, are cached once
-  per invocation, and have their output trimmed.
+- blamefetch runs commands through `sh -c` on Unix and `cmd /C` on Windows,
+  caches them once per invocation, and trims their output.
 - Braces in `name`, `email`, and text templates follow escape rules: `{{`
-  prints a literal `{`, `}}` prints a literal `}`, and `{}` prints literally.
+  prints a literal `{`, `}}` prints a literal `}`, and a bare `{}` is kept
+  as-is.
   To print `{claude_version}` as text without substituting, write
   `{{claude_version}}`.
 
@@ -158,9 +159,9 @@ The first line of `nvim --version` is `NVIM v0.12.4`; the pipeline extracts
 Co-Authored-By: Nvim v0.12.4 <editor@user.invalid>
 ```
 
-The `order` keeps the output to this one trailer. Sections merge into the
+The `order` limits the output to this one trailer. Sections merge into the
 built-in roster per key, so without it the machine rows (os, kernel, …) render
-first and `nvim` is appended after them — see
+first and `nvim` is appended after them; see
 [Combining with built-in sources](#combining-with-built-in-sources).
 
 Note: blamefetch already trims command output, so the trailing-newline cut is
@@ -226,7 +227,7 @@ recursive output.
 
 ## Combining with built-in sources
 
-> Sections merge into the built-in roster **per key** — a section with the same
+> Sections merge into the built-in roster **per key**: a section with the same
 > name as a built-in (like `gpu` above) replaces just that one; everything else
 > keeps rendering. To hide a built-in, set `enabled: false` on it instead of
 > omitting it; to show only a few sections, list exactly those in `order`.
@@ -272,7 +273,7 @@ distinguishing machine credits from tool credits (here `os`, `kernel`, and
 ## Safety
 
 Commands configured in `fields`, `name`, `email`, or a text section's `fields`
-are not sandboxed and run with blamefetch's own permissions — normally your
+are not sandboxed and run with blamefetch's own permissions, normally your
 user's, but elevated if blamefetch itself runs via `sudo` or a service. Only
 configure commands you trust, and only run config files whose contents you
 have reviewed. See the security section of the

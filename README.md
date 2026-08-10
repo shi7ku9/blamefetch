@@ -2,11 +2,11 @@
 
 A satirical neofetch that blames your whole machine for the commit.
 
-`blamefetch` prints a fake `git show`-style commit — using a real commit from
-the current repository when possible, or generated random data when not — and
+`blamefetch` prints a fake `git show`-style commit, using a real commit from
+the current repository when possible or generated random data when not, and
 credits your OS, kernel, host, hostname, user, shell, terminal, window manager,
 uptime, CPU, GPU, memory, disk, and locale as `Co-Authored-By` trailers.
-Anything else — such as editor or tool credits — comes from your configuration
+Anything else, such as editor or tool credits, comes from your configuration
 (see the example config below).
 
 It never creates or modifies commits. It just prints.
@@ -27,7 +27,7 @@ It never creates or modifies commits. It just prints.
   seed picks the same commit from the same repository, and only while the
   repository's history is unchanged. Other parts of the output (system info,
   and the `Date:` line when it is generated) still vary.
-- Optional colored output with `--color` — the flag forces color even
+- Optional colored output with `--color`: the flag forces color even
   when stdout is not a terminal or `NO_COLOR`/`CLICOLOR*` are set.
 - Sections resolve concurrently, each with a per-section timeout (default
   5 s, overridable via `BLAMEFETCH_SECTION_TIMEOUT_MS`); a section that hangs
@@ -136,21 +136,21 @@ blamefetch embeds a default configuration and merges
 `~/.config/blamefetch/config.json` on top of it (the exact path follows your
 platform's config directory).
 
-- `commit` — fallback `author_name` / `author_email`, used only when no real
+- `commit`: fallback `author_name` / `author_email`, used only when no real
   repo commit is picked (outside a git repository, or with `--no-git`); a real
   commit's own author wins. `--author` / `--email` always force.
-- `messages` — the `pool` used for random commit messages.
-- `sections` — one entry per output line: a co-author (object with
+- `messages`: the `pool` used for random commit messages.
+- `sections`: one entry per output line: a co-author (object with
   `name`/`email`/`fields`), or a plain text line (string value; an object with
   a `text` key also supports `{placeholder}` fields).
-- `order` — the exact display list: only listed sections render, in listed
+- `order`: the exact display list: only listed sections render, in listed
   order; sections omitted from `order` are not shown. `"order": null` is
   equivalent to an absent `order`; `"order": []` is an explicit empty list.
-- Tolerance — a malformed key or section is dropped one at a time with a
+- Tolerance: a malformed key or section is dropped one at a time with a
   warning while the rest of the config still applies (including any
   commands in the valid parts). Only a JSON syntax error or a non-object
   document falls back to the defaults entirely.
-- Standard input — config commands (`{ "command": ... }` values in
+- Standard input: config commands (`{ "command": ... }` values in
   `name`/`email`/`fields`) run with stdin closed: a command that reads stdin
   gets immediate EOF, so piping input into blamefetch never feeds a config
   command.
@@ -178,9 +178,6 @@ values can be plain strings or shell commands:
 }
 ```
 
-blamefetch credits the machine by default and attributes no one else; anything
-else it prints is your configuration.
-
 See [Configuring blamefetch](docs/config.md) for a full tutorial.
 `--print-config` shows the merged effective config, and `--list-sources` lists
 the built-in kinds: `os`, `kernel`, `host`, `hostname`, `user`, `shell`,
@@ -196,28 +193,28 @@ blamefetch's own probes are read-only: `uname -r` for the `kernel` co-author,
 `lspci -nn` for the `gpu` co-author, and the detected shell's `--version` for
 the `shell` co-author (bash, zsh, fish, nu, elvish, xonsh, and pwsh). The
 `os_info` library behind the `os` co-author additionally runs its own
-read-only platform queries — on Linux `lsb_release -a` and `getconf LONG_BIT`
+read-only platform queries: on Linux `lsb_release -a` and `getconf LONG_BIT`
 (plus `uname -m` if the uname syscall fails), on macOS `sw_vers`, on FreeBSD
 `/sbin/sysctl` plus `getconf LONG_BIT`, and on NetBSD/OpenBSD a `sysctl -n`
-bitness probe (their versions come from the `uname` syscall) — and those run
+bitness probe (their versions come from the `uname` syscall). Those run
 on every invocation, even when the `os` section is not rendered. No other
 commands run on their own.
 Commands run only if you configure them in a `sections` entry via `name`,
 `email`, `fields`, or a text section's `fields` with `{ "command": ... }`.
 Such commands run through your platform shell (`sh -c` on
 Unix, `cmd /C` on Windows) without a sandbox, with blamefetch's own
-permissions — normally the invoking user's. If you run blamefetch with
+permissions, normally the invoking user's. If you run blamefetch with
 elevated privileges (e.g. via `sudo` or as a service), those commands run
 with the elevated privileges, and the shell probe may execute a path chosen
 by a lower-privileged ancestor process. The probe refuses symlink targets
-whose resolved name no longer matches the detected shell — exactly, or as
-a digit-led variant such as `zsh5` or `zsh-5.9` — and it can be disabled
+whose resolved name no longer matches the detected shell, exactly or as
+a digit-led variant such as `zsh5` or `zsh-5.9`, and it can be disabled
 entirely by setting `BLAMEFETCH_NO_SHELL_VERSION=1` (any non-empty value
 other than `0`), in which case no detected shell path is ever executed. Do not run blamefetch with elevated privileges unless you also
 trust the config and the shell environment it detects.
 
 Only run config files you trust. You are responsible for reviewing any
-configuration — including any commands inside it — before running blamefetch.
+configuration, including any commands inside it, before running blamefetch.
 The project authors assume no liability for effects caused by user-supplied
 commands or configuration.
 
@@ -234,4 +231,4 @@ With Nix, the same checks are available as `nix flake check`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
