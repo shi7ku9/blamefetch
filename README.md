@@ -221,8 +221,8 @@ commands or configuration.
 ## Development
 
 The toolchain version, Clippy, and rustfmt are pinned in `rust-toolchain.toml`.
-GitHub Actions runs pre-commit, builds all targets, and runs the tests on Linux
-for pushes and pull requests. It can also be triggered manually.
+GitHub Actions runs pre-commit, builds all targets, and runs the tests on Linux,
+Windows, and macOS for pushes and pull requests. It can also be triggered manually.
 
 ```sh
 cargo build --locked --all-targets --all-features

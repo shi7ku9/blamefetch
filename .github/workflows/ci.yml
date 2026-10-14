@@ -17,8 +17,12 @@ env:
 
 jobs:
   check:
-    name: Format, lint, build, and test
-    runs-on: ubuntu-latest
+    name: Format, lint, build, and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
