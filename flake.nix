@@ -40,7 +40,7 @@
           overlayAttrs = inputs.rust-overlay.overlays.default final pkgs;
 
           devShells.default = pkgs.mkShell {
-            packages = [ toolchain pkgs.git ];
+            packages = [ toolchain pkgs.git pkgs.pre-commit ];
           };
 
           packages.default = rustPlatform.buildRustPackage {
