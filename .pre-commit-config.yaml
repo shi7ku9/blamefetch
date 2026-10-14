@@ -1,0 +1,29 @@
+minimum_pre_commit_version: '3.2.0'
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: Rust formatting
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: cargo-clippy
+        name: Rust Clippy
+        entry: cargo clippy --locked --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -220,14 +220,34 @@ commands or configuration.
 
 ## Development
 
+The toolchain version, Clippy, and rustfmt are pinned in `rust-toolchain.toml`.
+GitHub Actions runs pre-commit, builds all targets, and runs the tests on Linux,
+Windows, and macOS for pushes and pull requests. It can also be triggered manually.
+
 ```sh
-cargo build
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo build --locked --all-targets --all-features
+cargo test --locked --all-targets --all-features
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
 ```
 
 With Nix, the same checks are available as `nix flake check`.
+
+Install [pre-commit](https://pre-commit.com/#installation), or enter
+`nix develop` to get it alongside the Rust toolchain. Then enable the hooks
+once per clone and check all files:
+
+```sh
+pre-commit install
+pre-commit run --all-files
+```
+
+Each commit checks YAML, TOML, and JSON syntax, merge conflict markers,
+trailing whitespace, final newlines, Rust formatting, and Clippy warnings.
+The Rust hooks check the whole crate, including changes to config and test
+fixtures. Tests and builds run in CI; run the Cargo commands above locally
+when needed. If the formatting check fails, run `cargo fmt --all` and stage
+the result before committing again.
 
 ## License
 
